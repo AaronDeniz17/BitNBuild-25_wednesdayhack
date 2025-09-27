@@ -85,14 +85,21 @@ const requireRole = (roles) => {
   };
 };
 
-// University verification check
+// University verification check - only for students
 const requireUniversityVerification = (req, res, next) => {
-  if (!req.user || !req.user.university_verified) {
+  // Skip verification for non-student users
+  if (!req.user) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+
+  // Only require verification for student users
+  if (req.user.role === 'student' && !req.user.university_verified) {
     return res.status(403).json({ 
       error: 'University verification required',
       message: 'Please verify your university email to access this feature'
     });
   }
+  
   next();
 };
 

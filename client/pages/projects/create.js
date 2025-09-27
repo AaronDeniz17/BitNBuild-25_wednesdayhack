@@ -146,25 +146,97 @@ const CreateProjectPage = () => {
     setIsSubmitting(true);
 
     try {
+      // Validate required fields
+      if (!formData.title || !formData.description || !formData.budget || !formData.deadline) {
+        toast.error('Please fill in all required fields');
+        return;
+      }
+
+      // Validate budget is a number
+      const budget = parseFloat(formData.budget);
+      if (isNaN(budget) || budget <= 0) {
+        toast.error('Please enter a valid budget amount');
+        return;
+      }
+
+      // Validate at least one skill is selected
+      if (formData.required_skills.length === 0) {
+        toast.error('Please select at least one required skill');
+        return;
+      }
+
+      // Format milestone dates to ensure they're valid
+      const formattedMilestones = formData.milestones.map(m => {
+        const milestone = {
+          title: m.title.trim(),
+          description: m.description.trim(),
+          weight_pct: parseFloat(m.weight_pct) || 0
+        };
+        
+        // Make sure the due date is a valid ISO string
+        if (m.due_date) {
+          try {
+            milestone.due_date = new Date(m.due_date).toISOString();
+          } catch (e) {
+            console.error('Invalid milestone date:', e);
+          }
+        }
+        return milestone;
+      }).filter(m => m.title && m.due_date);
+
+      // Format the project deadline
+      let deadline;
+      try {
+        deadline = new Date(formData.deadline).toISOString();
+      } catch (e) {
+        toast.error('Invalid project deadline date');
+        return;
+      }
+
       const projectData = {
-        ...formData,
-        budget: parseFloat(formData.budget),
-        estimated_hours: parseFloat(formData.estimated_hours) || 0,
-        team_size_min: parseInt(formData.team_size_min),
-        team_size_max: parseInt(formData.team_size_max),
-        milestones: formData.milestones.map(m => ({
-          ...m,
-          weight_pct: parseFloat(m.weight_pct)
-        }))
+        title: formData.title.trim(),
+        description: formData.description.trim(),
+        budget: budget,
+        deadline: deadline,
+        category: formData.category,
+        required_skills: formData.required_skills,
+        urgency: formData.urgency || 'medium',
+        requires_team: Boolean(formData.requires_team),
+        team_size_min: Math.max(1, parseInt(formData.team_size_min) || 1),
+        team_size_max: Math.max(1, parseInt(formData.team_size_max) || 1),
+        estimated_hours: parseFloat(formData.estimated_hours) || null,
+        milestones: formattedMilestones
       };
 
       const response = await projectsAPI.createProject(projectData);
       
-      toast.success('Project created successfully!');
-      router.push(`/projects/${response.data.project.id}`);
+      if (response.data?.success) {
+        toast.success('Project created successfully!');
+        router.push(`/projects/${response.data.data.id}`);
+      } else {
+        throw new Error(response.data?.error || 'Failed to create project');
+      }
     } catch (error) {
       console.error('Project creation error:', error);
-      toast.error('Failed to create project. Please try again.');
+      
+      // Handle validation errors from the server
+      if (error.data?.details) {
+        error.data.details.forEach(detail => {
+          toast.error(detail);
+        });
+      } else if (error.data?.error) {
+        toast.error(error.data.error);
+      } else {
+        toast.error(error.message || 'Failed to create project. Please try again.');
+      }
+      
+      // Log additional details for debugging
+      if (error.status) {
+        console.error(`Server responded with status ${error.status}`);
+      }
+      if (error.data) {
+        console.error('Server response:', error.data);
+      }
     } finally {
       setIsSubmitting(false);
     }

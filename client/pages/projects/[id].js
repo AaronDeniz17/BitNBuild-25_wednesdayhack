@@ -3,6 +3,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
+import Link from 'next/link';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { toast } from 'react-hot-toast';
 import { Dialog, Transition } from '@headlessui/react';
@@ -40,25 +41,52 @@ const ProjectDetailPage = () => {
     message: ''
   });
 
-  useEffect(() => {
-    if (id) {
-      fetchProjectDetails();
+  // Fetch project details using React Query
+  const { data: projectData, isLoading: loading, error } = useQuery(
+    ['project', id],
+    () => projectsAPI.getProject(id),
+    {
+      enabled: !!id,
+      retry: 2
     }
-  }, [id]);
+  );
 
-  const fetchProjectDetails = async () => {
-    try {
-      const response = await projectsAPI.getProject(id);
-      setProject(response.data.project);
-      setClient(response.data.client);
-      setBids(response.data.bids || []);
-    } catch (error) {
-      console.error('Failed to fetch project:', error);
+  // Handle error state
+  useEffect(() => {
+    if (error) {
+      console.error('Error fetching project:', error);
       toast.error('Failed to load project details');
-    } finally {
-      setLoading(false);
     }
-  };
+  }, [error]);
+
+  // Get project, client, and bids from the response
+  const project = projectData?.data?.project;
+  const client = projectData?.data?.client;
+  const bids = projectData?.data?.bids || [];
+
+  // Bid submission mutation
+  const bidMutation = useMutation(
+    (bidPayload) => bidsAPI.createBid(bidPayload),
+    {
+      onSuccess: () => {
+        toast.success('Bid submitted successfully!');
+        setIsBidModalOpen(false);
+        setBidData({
+          price: '',
+          proposal: '',
+          eta_days: '',
+          portfolio_links: [''],
+          message: ''
+        });
+        // Invalidate project query to refetch
+        queryClient.invalidateQueries(['project', id]);
+      },
+      onError: (error) => {
+        console.error('Bid submission error:', error);
+        toast.error('Failed to submit bid. Please try again.');
+      }
+    }
+  );
 
   const handleBidSubmit = async (e) => {
     e.preventDefault();
@@ -78,38 +106,16 @@ const ProjectDetailPage = () => {
       return;
     }
 
-    setSubmittingBid(true);
+    const bidPayload = {
+      project_id: id,
+      price: parseFloat(bidData.price),
+      proposal: bidData.proposal,
+      eta_days: parseInt(bidData.eta_days),
+      portfolio_links: bidData.portfolio_links.filter(link => link.trim()),
+      message: bidData.message
+    };
 
-    try {
-      const bidPayload = {
-        project_id: id,
-        price: parseFloat(bidData.price),
-        proposal: bidData.proposal,
-        eta_days: parseInt(bidData.eta_days),
-        portfolio_links: bidData.portfolio_links.filter(link => link.trim()),
-        message: bidData.message
-      };
-
-      await bidsAPI.createBid(bidPayload);
-      
-      toast.success('Bid submitted successfully!');
-      setShowBidModal(false);
-      setBidData({
-        price: '',
-        proposal: '',
-        eta_days: '',
-        portfolio_links: [],
-        message: ''
-      });
-      
-      // Refresh project details to show new bid
-      fetchProjectDetails();
-    } catch (error) {
-      console.error('Bid submission error:', error);
-      toast.error('Failed to submit bid. Please try again.');
-    } finally {
-      setSubmittingBid(false);
-    }
+    bidMutation.mutate(bidPayload);
   };
 
   const handlePortfolioLinkChange = (index, value) => {

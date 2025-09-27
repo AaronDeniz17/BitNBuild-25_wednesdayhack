@@ -44,13 +44,19 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (response) => response,
   (error) => {
+    // Handle 401 Unauthorized
     if (error.response?.status === 401) {
-      // Token expired or invalid - clear storage but don't auto-redirect
       localStorage.removeItem('token');
       localStorage.removeItem('user');
-      // Let the AuthContext handle the redirect instead of forcing it here
+      localStorage.removeItem('gigcampus_auth');
     }
-    return Promise.reject(error);
+
+    // Return a more informative error message
+    const errorMessage = error.response?.data?.error || error.response?.data?.message || error.message;
+    const enhancedError = new Error(errorMessage);
+    enhancedError.status = error.response?.status;
+    enhancedError.data = error.response?.data;
+    return Promise.reject(enhancedError);
   }
 );
 

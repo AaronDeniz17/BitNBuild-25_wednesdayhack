@@ -11,7 +11,8 @@ import {
   ClockIcon,
   UserGroupIcon,
   CheckCircleIcon,
-  ExclamationTriangleIcon
+  ExclamationTriangleIcon,
+  ChartBarIcon
 } from '@heroicons/react/24/outline';
 
 import Layout from '../../components/Layout/Layout';

@@ -41,10 +41,18 @@ router.post('/register', userRateLimit(5, 15 * 60 * 1000), async (req, res) => {
     } = req.body;
 
     // Validate required fields
-    if (!idToken || !name || !university) {
+    if (!idToken || !name) {
       return res.status(400).json({ 
         error: 'Missing required fields',
-        required: ['idToken', 'name', 'university']
+        required: ['idToken', 'name']
+      });
+    }
+
+    // University is required only for students
+    if (role === 'student' && !university) {
+      return res.status(400).json({ 
+        error: 'University is required for student registration',
+        required: ['university']
       });
     }
 
@@ -96,7 +104,7 @@ router.post('/register', userRateLimit(5, 15 * 60 * 1000), async (req, res) => {
       badges: []
     };
 
-    await db.collection('users').doc(userRecord.uid).set(userData);
+    await db.collection('users').doc(uid).set(userData);
 
     // Send verification email if university email
     if (isUniEmail) {
@@ -106,7 +114,7 @@ router.post('/register', userRateLimit(5, 15 * 60 * 1000), async (req, res) => {
     res.status(201).json({
       message: 'User registered successfully',
       user: {
-        id: userRecord.uid,
+        id: uid,
         email,
         name,
         role,

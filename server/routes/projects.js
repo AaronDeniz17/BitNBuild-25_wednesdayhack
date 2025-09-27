@@ -34,7 +34,8 @@ const validateProjectData = (data, isCreate = true) => {
   }
   
   if (isCreate || data.budget !== undefined) {
-    if (!data.budget || data.budget < 25) {
+    const budget = parseFloat(data.budget);
+    if (isNaN(budget) || budget < 25) {
       errors.push('Budget must be at least $25');
     }
   }
@@ -43,16 +44,26 @@ const validateProjectData = (data, isCreate = true) => {
     if (!data.deadline) {
       errors.push('Deadline is required');
     } else {
-      const deadlineDate = new Date(data.deadline);
-      const now = new Date();
-      if (deadlineDate <= now) {
-        errors.push('Deadline must be in the future');
+      try {
+        const deadlineDate = new Date(data.deadline);
+        const now = new Date();
+        if (isNaN(deadlineDate.getTime())) {
+          errors.push('Invalid deadline date format');
+        } else if (deadlineDate <= now) {
+          errors.push('Deadline must be in the future');
+        }
+      } catch (error) {
+        errors.push('Invalid deadline date format');
       }
     }
   }
   
-  if (data.skills_required && !Array.isArray(data.skills_required)) {
-    errors.push('Skills required must be an array');
+  if (isCreate) {
+    if (!data.required_skills || !Array.isArray(data.required_skills) || data.required_skills.length === 0) {
+      errors.push('At least one required skill must be specified');
+    }
+  } else if (data.required_skills !== undefined && !Array.isArray(data.required_skills)) {
+    errors.push('Required skills must be an array');
   }
   
   return errors;
@@ -241,7 +252,32 @@ router.get('/:id', optionalAuth, async (req, res) => {
  * POST /api/projects
  * Create a new project
  */
-router.post('/', auth, requireUniversityVerification, userRateLimit(10, 60 * 60 * 1000), async (req, res) => {
+// Custom middleware for project creation
+const verifyProjectCreator = (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+
+  // For students, require university verification
+  if (req.user.role === 'student' && !req.user.university_verified) {
+    return res.status(403).json({ 
+      error: 'University verification required',
+      message: 'Students must verify their university email to create projects'
+    });
+  }
+
+  // For clients, just check if they are a client
+  if (req.user.role !== 'client' && req.user.role !== 'student') {
+    return res.status(403).json({ 
+      error: 'Invalid user role',
+      message: 'Only clients and verified students can create projects'
+    });
+  }
+
+  next();
+};
+
+router.post('/', auth, verifyProjectCreator, userRateLimit(10, 60 * 60 * 1000), async (req, res) => {
   try {
     const projectData = req.body;
     
@@ -269,10 +305,10 @@ router.post('/', auth, requireUniversityVerification, userRateLimit(10, 60 * 60 
       title: projectData.title.trim(),
       description: projectData.description.trim(),
       category: projectData.category || 'other',
-      skills_required: projectData.skills_required || [],
+      skills_required: projectData.required_skills || [], // Changed from skills_required to required_skills to match client
       budget: parseFloat(projectData.budget),
       budget_type: projectData.budget_type || 'fixed',
-      deadline: admin.firestore.Timestamp.fromDate(new Date(projectData.deadline)),
+      deadline: projectData.deadline ? admin.firestore.Timestamp.fromDate(new Date(projectData.deadline)) : null,
       status: PROJECT_STATUS.OPEN,
       
       // Optional fields
