@@ -30,9 +30,9 @@ const ClientDashboard = () => {
   });
 
   // Fetch user's projects
-  const { data: projects, isLoading: projectsLoading } = useQuery(
+  const { data: projectsResponse, isLoading: projectsLoading, error: projectsError } = useQuery(
     'client-projects',
-    () => projectsAPI.getProjects({ type: 'client' }),
+    () => projectsAPI.getMyProjects(),
     {
       enabled: !!user,
     }

@@ -43,6 +43,16 @@ const StudentDashboard = () => {
     }
   );
 
+  // Get the actual projects array from the API response and filter out user's own projects
+  const projectsArray = recommendedProjects?.data?.data || [];
+  const filteredProjects = projectsArray.filter(project => 
+    project.client_id !== user?.id
+  );
+
+  console.log('Student Dashboard - API Response:', recommendedProjects);
+  console.log('Student Dashboard - Projects Array:', projectsArray);
+  console.log('Student Dashboard - Filtered Projects:', filteredProjects);
+
   const { data: contracts, isLoading: contractsLoading } = useQuery(
     'student-contracts',
     () => contractsAPI.getContracts({ type: 'freelancer' }),
@@ -258,9 +268,9 @@ const StudentDashboard = () => {
                   <div className="flex items-center justify-center py-8">
                     <div className="loading-spinner"></div>
                   </div>
-                ) : recommendedProjects?.projects?.length > 0 ? (
+                ) : filteredProjects?.length > 0 ? (
                   <div className="space-y-4">
-                    {recommendedProjects.projects.slice(0, 3).map((project) => (
+                    {filteredProjects.slice(0, 3).map((project) => (
                       <div key={project.id} className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
                         <div className="flex items-start justify-between">
                           <div className="flex-1">

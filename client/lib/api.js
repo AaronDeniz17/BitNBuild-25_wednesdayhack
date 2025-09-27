@@ -3,7 +3,7 @@
 
 import axios from 'axios';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5001/api';
 
 // Create axios instance
 const api = axios.create({
@@ -93,10 +93,11 @@ export const authAPI = {
 export const projectsAPI = {
   getProjects: (params = {}) => api.get('/projects', { params }),
   getProject: (id) => api.get(`/projects/${id}`),
+  getMyProjects: (params = {}) => api.get('/projects/my/created', { params }),
   createProject: (projectData) => api.post('/projects', projectData),
   updateProject: (id, updates) => api.put(`/projects/${id}`, updates),
   deleteProject: (id) => api.delete(`/projects/${id}`),
-  getRecommended: () => api.get('/projects/recommended'),
+  getRecommended: () => api.get('/projects?status=open&limit=50'),
   getSkillSuggestions: () => api.get('/projects/skill-suggestions'),
   
   // Analytics endpoints
