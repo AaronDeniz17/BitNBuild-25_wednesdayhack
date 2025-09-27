@@ -208,34 +208,47 @@ const CreateProjectPage = () => {
         milestones: formattedMilestones
       };
 
-      const response = await projectsAPI.createProject(projectData);
+      const loadingToast = toast.loading('Creating project...');
       
-      if (response.data?.success) {
-        toast.success('Project created successfully!');
-        router.push(`/projects/${response.data.data.id}`);
-      } else {
-        throw new Error(response.data?.error || 'Failed to create project');
-      }
-    } catch (error) {
-      console.error('Project creation error:', error);
-      
-      // Handle validation errors from the server
-      if (error.data?.details) {
-        error.data.details.forEach(detail => {
-          toast.error(detail);
+      try {
+        const response = await projectsAPI.createProject(projectData);
+        
+        toast.dismiss(loadingToast);
+        
+        if (response.data?.success) {
+          toast.success('Project created successfully!');
+          router.push(`/projects/${response.data.data.id}`);
+        } else {
+          throw new Error(response.data?.error || 'Failed to create project');
+        }
+      } catch (error) {
+        toast.dismiss(loadingToast);
+        console.error('Project creation error:', error);
+        
+        // Handle different types of errors
+        if (error.response?.status === 401) {
+          toast.error('Please log in to create a project');
+          router.push('/login');
+          return;
+        }
+        
+        // Handle validation errors from the server
+        if (Array.isArray(error.details)) {
+          error.details.forEach(detail => {
+            toast.error(detail);
+          });
+        } else if (error.message) {
+          toast.error(error.message);
+        } else {
+          toast.error('Failed to create project. Please try again.');
+        }
+        
+        // Log additional details for debugging
+        console.error('Full error:', {
+          status: error.response?.status,
+          data: error.response?.data,
+          config: error.config
         });
-      } else if (error.data?.error) {
-        toast.error(error.data.error);
-      } else {
-        toast.error(error.message || 'Failed to create project. Please try again.');
-      }
-      
-      // Log additional details for debugging
-      if (error.status) {
-        console.error(`Server responded with status ${error.status}`);
-      }
-      if (error.data) {
-        console.error('Server response:', error.data);
       }
     } finally {
       setIsSubmitting(false);

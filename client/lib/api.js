@@ -12,7 +12,11 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+  withCredentials: true, // Enable CORS credentials
 });
+
+// Log base URL for debugging
+console.log('API Base URL:', API_BASE_URL);
 
 // Request interceptor to add auth token
 api.interceptors.request.use(
@@ -44,19 +48,35 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (response) => response,
   (error) => {
+    console.error('API Error:', {
+      url: error.config?.url,
+      method: error.config?.method,
+      status: error.response?.status,
+      data: error.response?.data
+    });
+
     // Handle 401 Unauthorized
     if (error.response?.status === 401) {
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
       localStorage.removeItem('gigcampus_auth');
+      window.location.href = '/login';
+      return Promise.reject({ message: 'Please log in to continue' });
     }
 
-    // Return a more informative error message
-    const errorMessage = error.response?.data?.error || error.response?.data?.message || error.message;
-    const enhancedError = new Error(errorMessage);
-    enhancedError.status = error.response?.status;
-    enhancedError.data = error.response?.data;
-    return Promise.reject(enhancedError);
+    // Extract error details
+    const errorMessage = error.response?.data?.error || 
+                        error.response?.data?.message || 
+                        error.message || 
+                        'An unexpected error occurred';
+                        
+    const errorDetails = error.response?.data?.details;
+
+    // Return enriched error
+    return Promise.reject({
+      message: errorMessage,
+      details: errorDetails,
+      status: error.response?.status,
+      data: error.response?.data
+    });
   }
 );
 
@@ -77,8 +97,15 @@ export const projectsAPI = {
   updateProject: (id, updates) => api.put(`/projects/${id}`, updates),
   deleteProject: (id) => api.delete(`/projects/${id}`),
   getRecommended: () => api.get('/projects/recommended'),
-  getTrendingSkills: () => api.get('/projects/trending-skills'),
   getSkillSuggestions: () => api.get('/projects/skill-suggestions'),
+  
+  // Analytics endpoints
+  getSkillCategories: () => api.get('/analytics/skills/categories'),
+  getTrendingSkills: (timeframe = 30) => api.get('/analytics/skills/trending', { params: { timeframe } }),
+  getRecommendedStudents: (projectId, limit = 10) => api.get('/analytics/students/recommended', { 
+    params: { project_id: projectId, limit } 
+  }),
+  getStudentRankings: (params = {}) => api.get('/analytics/students/rankings', { params })
 };
 
 // Bids API

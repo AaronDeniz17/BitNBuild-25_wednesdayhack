@@ -7,10 +7,39 @@
 @layer base {
   html {
     font-family: 'Inter', system-ui, sans-serif;
+    @apply bg-gray-50 dark:bg-gray-900 transition-colors duration-300;
   }
   
   body {
-    @apply bg-gray-50 text-gray-900;
+    @apply bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white transition-colors duration-300;
+  }
+  
+  /* Ensure the root element also has dark background */
+  #__next {
+    @apply min-h-screen bg-gray-50 dark:bg-gray-900 transition-colors duration-300;
+  }
+  
+  /* Comprehensive dark mode coverage */
+  .dark {
+    color-scheme: dark;
+  }
+  
+  /* Ensure all containers are dark */
+  .dark div:not([class*="bg-"]):not([class*="text-"]) {
+    @apply bg-transparent;
+  }
+  
+  /* Override any remaining light backgrounds */
+  .dark .bg-white {
+    @apply !bg-gray-800;
+  }
+  
+  .dark .bg-gray-50 {
+    @apply !bg-gray-900;
+  }
+  
+  .dark .bg-gray-100 {
+    @apply !bg-gray-800;
   }
 }
 
@@ -24,7 +53,7 @@
   }
   
   .btn-secondary {
-    @apply btn bg-white text-gray-700 border-gray-300 hover:bg-gray-50 focus:ring-primary-500;
+    @apply btn bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600 focus:ring-primary-500;
   }
   
   .btn-success {
@@ -48,19 +77,19 @@
   }
   
   .input {
-    @apply block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-primary-500 focus:border-primary-500 sm:text-sm;
+    @apply block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 dark:placeholder-gray-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-primary-500 focus:border-primary-500 sm:text-sm transition-colors duration-200;
   }
   
   .input-error {
-    @apply border-error-300 focus:ring-error-500 focus:border-error-500;
+    @apply border-error-300 dark:border-error-600 focus:ring-error-500 focus:border-error-500;
   }
   
   .card {
-    @apply bg-white shadow rounded-lg;
+    @apply bg-white dark:bg-gray-800 shadow dark:shadow-gray-900/20 rounded-lg border border-gray-200 dark:border-gray-700 transition-colors duration-300;
   }
   
   .card-header {
-    @apply px-6 py-4 border-b border-gray-200;
+    @apply px-6 py-4 border-b border-gray-200 dark:border-gray-700;
   }
   
   .card-body {
@@ -68,7 +97,7 @@
   }
   
   .card-footer {
-    @apply px-6 py-4 border-t border-gray-200 bg-gray-50;
+    @apply px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700;
   }
   
   .badge {

@@ -5,6 +5,9 @@ const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const { admin, db } = require('../config/firebase');
 const { auth, optionalAuth, requireUniversityVerification, userRateLimit } = require('../middleware/auth');
+const handleError = require('../utils/error-handler');
+const dbOperations = require('../utils/db-operations');
+const firestoreHelpers = require('../utils/firestore-helpers');
 
 const router = express.Router();
 
@@ -16,6 +19,77 @@ const PROJECT_STATUS = {
   COMPLETED: 'completed',
   CANCELLED: 'cancelled'
 };
+
+// Get single project by ID
+router.get('/:id', optionalAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log('Fetching project:', id);
+    
+    const result = await firestoreHelpers.getDocumentById('projects', id);
+    if (!result.success) {
+      return res.status(result.error === 'Document not found' ? 404 : 500).json(result);
+    }
+    
+    // Get client info
+    const clientResult = await firestoreHelpers.getDocumentById('users', result.data.client_id);
+    const clientData = clientResult.success ? clientResult.data : null;
+    
+    // Get bids if authenticated
+    let bids = [];
+    if (req.user) {
+      const bidsResult = await firestoreHelpers.getDocuments('bids', {
+        'project_id': id
+      }, {
+        orderBy: 'created_at',
+        orderDirection: 'desc'
+      });
+      
+      if (bidsResult.success) {
+        bids = await Promise.all(bidsResult.data.map(async (bid) => {
+          const freelancerResult = await firestoreHelpers.getDocumentById('users', bid.freelancer_id);
+          const freelancerData = freelancerResult.success ? freelancerResult.data : null;
+          
+          return {
+            ...bid,
+            freelancer: freelancerData ? {
+              id: freelancerData.id,
+              name: freelancerData.name,
+              avatar: freelancerData.avatar,
+              rating: freelancerData.rating,
+              completed_projects: freelancerData.completed_projects
+            } : null
+          };
+        }));
+      }
+    }
+    
+    // Prepare response
+    const response = {
+      success: true,
+      data: {
+        project: result.data,
+        client: clientData ? {
+          id: clientData.id,
+          name: clientData.name,
+          avatar: clientData.avatar,
+          rating: clientData.rating,
+          total_projects: clientData.total_projects
+        } : null,
+        bids: req.user ? bids : undefined
+      }
+    };
+    
+    res.json(response);
+  } catch (error) {
+    console.error('Error getting project:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get project details',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
 
 // Helper function to validate project data
 const validateProjectData = (data, isCreate = true) => {
@@ -88,68 +162,61 @@ router.get('/', optionalAuth, async (req, res) => {
       search
     } = req.query;
 
-    let query = db.collection('projects');
-
-    // Apply filters
+    // Build filters object
+    const filters = {};
+    
     if (status && status !== 'all') {
-      query = query.where('status', '==', status);
+      filters['status'] = status;
     }
-
+    
     if (category) {
-      query = query.where('category', '==', category);
+      filters['category'] = category;
     }
-
-    if (min_budget) {
-      query = query.where('budget', '>=', parseFloat(min_budget));
-    }
-
-    if (max_budget) {
-      query = query.where('budget', '<=', parseFloat(max_budget));
-    }
-
-    // Skills filtering (if skills provided)
-    if (skills) {
-      const skillsArray = Array.isArray(skills) ? skills : [skills];
-      query = query.where('skills_required', 'array-contains-any', skillsArray);
-    }
-
-    // Sorting
+    
+    // Build options object
     const validSortFields = ['created_at', 'budget', 'deadline', 'bid_count'];
-    const sortField = validSortFields.includes(sort_by) ? sort_by : 'created_at';
-    const sortDirection = sort_order === 'asc' ? 'asc' : 'desc';
+    const options = {
+      orderBy: validSortFields.includes(sort_by) ? sort_by : 'created_at',
+      orderDirection: sort_order === 'asc' ? 'asc' : 'desc',
+      limit: Math.min(parseInt(limit), 50)
+    };
     
-    query = query.orderBy(sortField, sortDirection);
-
-    // Pagination
-    const pageSize = Math.min(parseInt(limit), 50);
-    const offset = (parseInt(page) - 1) * pageSize;
+    // Get projects
+    const result = await firestoreHelpers.getDocuments('projects', filters, options);
+    if (!result.success) {
+      return res.status(500).json(result);
+    }
     
-    query = query.limit(pageSize).offset(offset);
-
-    const snapshot = await query.get();
-    const projects = [];
-
-    for (const doc of snapshot.docs) {
-      const projectData = doc.data();
+    // Post-process results for search, budget range, and skills
+    const projects = result.data.filter(project => {
+      // Budget range filter
+      if (min_budget && project.budget < parseFloat(min_budget)) return false;
+      if (max_budget && project.budget > parseFloat(max_budget)) return false;
       
-      // Text search filtering (simple implementation)
+      // Skills filter
+      if (skills) {
+        const skillsArray = Array.isArray(skills) ? skills : [skills];
+        if (!skillsArray.some(skill => project.skills_required?.includes(skill))) return false;
+      }
+      
+      // Search filter
       if (search) {
         const searchTerm = search.toLowerCase();
-        const titleMatch = projectData.title?.toLowerCase().includes(searchTerm);
-        const descMatch = projectData.description?.toLowerCase().includes(searchTerm);
-        
-        if (!titleMatch && !descMatch) {
-          continue;
-        }
+        const titleMatch = project.title?.toLowerCase().includes(searchTerm);
+        const descMatch = project.description?.toLowerCase().includes(searchTerm);
+        if (!titleMatch && !descMatch) return false;
       }
-
-      // Get client info
-      const clientDoc = await db.collection('users').doc(projectData.client_id).get();
-      const clientData = clientDoc.exists ? clientDoc.data() : null;
-
-      projects.push({
-        id: doc.id,
-        ...projectData,
+      
+      return true;
+    });
+    
+    // Get client info for each project
+    const projectsWithClients = await Promise.all(projects.map(async (project) => {
+      const clientResult = await firestoreHelpers.getDocumentById('users', project.client_id);
+      const clientData = clientResult.success ? clientResult.data : null;
+      
+      return {
+        ...project,
         client: clientData ? {
           id: clientData.id,
           name: clientData.name,
@@ -157,29 +224,33 @@ router.get('/', optionalAuth, async (req, res) => {
           university_verified: clientData.university_verified,
           average_rating: clientData.average_rating || 0
         } : null
-      });
-    }
-
-    // Get total count for pagination
-    const totalQuery = db.collection('projects');
-    // Apply same filters for count (simplified)
-    const totalSnapshot = await totalQuery.get();
-    const totalCount = totalSnapshot.size;
-
+      };
+    }));
+    
+    // Pagination
+    const pageNum = parseInt(page);
+    const pageSize = Math.min(parseInt(limit), 50);
+    const startIdx = (pageNum - 1) * pageSize;
+    const paginatedProjects = projectsWithClients.slice(startIdx, startIdx + pageSize);
+    
     res.json({
       success: true,
-      data: projects,
+      data: paginatedProjects,
       pagination: {
-        page: parseInt(page),
+        page: pageNum,
         limit: pageSize,
-        total: totalCount,
-        pages: Math.ceil(totalCount / pageSize)
+        total: projectsWithClients.length,
+        pages: Math.ceil(projectsWithClients.length / pageSize)
       }
     });
 
   } catch (error) {
     console.error('Get projects error:', error);
-    res.status(500).json({ error: 'Failed to get projects' });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get projects',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
@@ -280,11 +351,13 @@ const verifyProjectCreator = (req, res, next) => {
 router.post('/', auth, verifyProjectCreator, userRateLimit(10, 60 * 60 * 1000), async (req, res) => {
   try {
     const projectData = req.body;
+    console.log('Creating project with data:', JSON.stringify(projectData, null, 2));
     
     // Validate project data
     const validationErrors = validateProjectData(projectData, true);
     if (validationErrors.length > 0) {
       return res.status(400).json({ 
+        success: false,
         error: 'Validation failed',
         details: validationErrors
       });
@@ -293,11 +366,38 @@ router.post('/', auth, verifyProjectCreator, userRateLimit(10, 60 * 60 * 1000), 
     // Check if user can create projects (students and clients can create projects)
     if (!['student', 'client'].includes(req.user.role)) {
       return res.status(403).json({ 
-        error: 'Only students and clients can create projects' 
+        success: false,
+        error: 'Only students and clients can create projects',
+        details: [`Current role: ${req.user.role}`]
+      });
+    }
+
+    // Format dates and numbers
+    let deadline;
+    try {
+      deadline = projectData.deadline ? admin.firestore.Timestamp.fromDate(new Date(projectData.deadline)) : null;
+      if (!deadline) {
+        throw new Error('Invalid deadline');
+      }
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid deadline date format',
+        details: ['Please provide a valid date for the project deadline']
+      });
+    }
+
+    const budget = parseFloat(projectData.budget);
+    if (isNaN(budget) || budget <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid budget',
+        details: ['Budget must be a positive number']
       });
     }
 
     const projectId = uuidv4();
+    console.log('Generated project ID:', projectId);
     
     const newProject = {
       id: projectId,
@@ -305,16 +405,16 @@ router.post('/', auth, verifyProjectCreator, userRateLimit(10, 60 * 60 * 1000), 
       title: projectData.title.trim(),
       description: projectData.description.trim(),
       category: projectData.category || 'other',
-      skills_required: projectData.required_skills || [], // Changed from skills_required to required_skills to match client
-      budget: parseFloat(projectData.budget),
+      skills_required: projectData.required_skills || [],
+      budget: budget,
       budget_type: projectData.budget_type || 'fixed',
-      deadline: projectData.deadline ? admin.firestore.Timestamp.fromDate(new Date(projectData.deadline)) : null,
+      deadline: deadline,
       status: PROJECT_STATUS.OPEN,
       
       // Optional fields
       attachments: projectData.attachments || [],
       requirements: projectData.requirements || [],
-      milestones: projectData.milestones || [],
+      milestones: [],
       
       // Metadata
       created_at: admin.firestore.FieldValue.serverTimestamp(),
@@ -329,32 +429,59 @@ router.post('/', auth, verifyProjectCreator, userRateLimit(10, 60 * 60 * 1000), 
       is_urgent: projectData.is_urgent || false
     };
 
-    await db.collection('projects').doc(projectId).set(newProject);
-
-    // Create initial milestones if provided
-    if (projectData.milestones && projectData.milestones.length > 0) {
-      const batch = db.batch();
-      
-      projectData.milestones.forEach((milestone, index) => {
-        const milestoneId = uuidv4();
-        const milestoneData = {
-          id: milestoneId,
-          project_id: projectId,
-          title: milestone.title,
-          description: milestone.description || '',
-          budget: parseFloat(milestone.budget),
-          deadline: admin.firestore.Timestamp.fromDate(new Date(milestone.deadline)),
-          order: index + 1,
-          status: 'pending',
-          created_at: admin.firestore.FieldValue.serverTimestamp()
-        };
-        
-        batch.set(db.collection('milestones').doc(milestoneId), milestoneData);
+    // Create the project first
+    try {
+      await db.collection('projects').doc(projectId).set(newProject);
+      console.log('Created project document');
+    } catch (error) {
+      console.error('Failed to create project document:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Database error',
+        details: ['Failed to create project. Please try again.']
       });
-      
-      await batch.commit();
     }
 
+    // Create milestones if provided
+    if (projectData.milestones?.length > 0) {
+      try {
+        const batch = db.batch();
+        const validMilestones = [];
+        
+        for (const [index, milestone] of projectData.milestones.entries()) {
+          try {
+            const milestoneId = uuidv4();
+            const milestoneData = {
+              id: milestoneId,
+              project_id: projectId,
+              title: milestone.title.trim(),
+              description: milestone.description?.trim() || '',
+              budget: parseFloat(milestone.budget) || 0,
+              deadline: admin.firestore.Timestamp.fromDate(new Date(milestone.deadline)),
+              order: index + 1,
+              status: 'pending',
+              created_at: admin.firestore.FieldValue.serverTimestamp()
+            };
+            
+            batch.set(db.collection('milestones').doc(milestoneId), milestoneData);
+            validMilestones.push(milestoneData);
+          } catch (error) {
+            console.warn('Skipping invalid milestone:', error);
+          }
+        }
+        
+        if (validMilestones.length > 0) {
+          await batch.commit();
+          newProject.milestones = validMilestones;
+          console.log('Created', validMilestones.length, 'milestones');
+        }
+      } catch (error) {
+        console.error('Failed to create milestones:', error);
+        // Don't fail the whole request if milestones fail
+      }
+    }
+
+    console.log('Project creation complete');
     res.status(201).json({
       success: true,
       message: 'Project created successfully',
@@ -362,8 +489,13 @@ router.post('/', auth, verifyProjectCreator, userRateLimit(10, 60 * 60 * 1000), 
     });
 
   } catch (error) {
-    console.error('Create project error:', error);
-    res.status(500).json({ error: 'Failed to create project' });
+    console.error('Project creation error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Server error',
+      message: 'Failed to create project',
+      details: process.env.NODE_ENV === 'development' ? [error.message] : undefined
+    });
   }
 });
 

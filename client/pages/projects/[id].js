@@ -47,7 +47,14 @@ const ProjectDetailPage = () => {
     () => projectsAPI.getProject(id),
     {
       enabled: !!id,
-      retry: 2
+      retry: 2,
+      onError: (error) => {
+        console.error('Error fetching project details:', error);
+        toast.error(error.message || 'Failed to load project details');
+      },
+      onSuccess: (data) => {
+        console.log('Project data fetched successfully:', data);
+      }
     }
   );
 
