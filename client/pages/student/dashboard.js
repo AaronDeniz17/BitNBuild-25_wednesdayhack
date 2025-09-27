@@ -29,30 +29,41 @@ const StudentDashboard = () => {
     averageRating: 0,
   });
 
-  // Fetch recommended projects
+  // Re-enable API calls with improved error handling
   const { data: recommendedProjects, isLoading: projectsLoading } = useQuery(
     'recommended-projects',
     () => projectsAPI.getRecommended(),
     {
       enabled: !!user,
+      retry: 1,
+      onError: (error) => {
+        console.error('Failed to fetch recommended projects:', error);
+      },
+      staleTime: 5 * 60 * 1000, // Cache for 5 minutes
     }
   );
 
-  // Fetch user's contracts
   const { data: contracts, isLoading: contractsLoading } = useQuery(
     'student-contracts',
     () => contractsAPI.getContracts({ type: 'freelancer' }),
     {
       enabled: !!user,
+      retry: 1,
+      onError: (error) => {
+        console.error('Failed to fetch contracts:', error);
+      }
     }
   );
 
-  // Fetch user's reviews
   const { data: reviews, isLoading: reviewsLoading } = useQuery(
     'student-reviews',
     () => reviewsAPI.getReviewStats(user?.id),
     {
       enabled: !!user,
+      retry: 1,
+      onError: (error) => {
+        console.error('Failed to fetch reviews:', error);
+      }
     }
   );
 

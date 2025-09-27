@@ -344,62 +344,25 @@ router.delete('/:id', authenticateToken, requireRole(['client']), async (req, re
 
 /**
  * GET /api/projects/recommended
- * Get recommended projects for students
+ * Get recommended projects for current student
  */
 router.get('/recommended', authenticateToken, requireRole(['student']), async (req, res) => {
   try {
     const userId = req.user.id;
+    const { limit = 10 } = req.query;
 
-    // Get student profile
-    const studentDoc = await admin.firestore()
-      .collection('student_profiles')
-      .doc(userId)
-      .get();
+    // Use the new recommendations utility
+    const { getRecommendedProjects } = require('../utils/recommendations');
+    const projects = await getRecommendedProjects(userId, parseInt(limit));
 
-    if (!studentDoc.exists) {
-      return res.status(404).json({ error: 'Student profile not found' });
-    }
+    // Format dates for JSON response
+    const formattedProjects = projects.map(project => ({
+      ...project,
+      created_at: project.created_at?.toDate?.() || project.created_at,
+      deadline: project.deadline?.toDate?.() || project.deadline
+    }));
 
-    const studentData = studentDoc.data();
-    const studentSkills = studentData.skills || [];
-
-    // Get open projects
-    let query = admin.firestore()
-      .collection('projects')
-      .where('status', '==', 'open')
-      .orderBy('created_at', 'desc')
-      .limit(20);
-
-    const snapshot = await query.get();
-    const projects = [];
-
-    snapshot.forEach(doc => {
-      const projectData = doc.data();
-      
-      // Calculate skill match score
-      const projectSkills = projectData.required_skills || [];
-      const skillMatches = projectSkills.filter(skill => 
-        studentSkills.includes(skill)
-      ).length;
-      const skillMatchScore = projectSkills.length > 0 ? 
-        (skillMatches / projectSkills.length) * 100 : 0;
-
-      // Only include projects with at least 50% skill match
-      if (skillMatchScore >= 50) {
-        projects.push({
-          id: doc.id,
-          ...projectData,
-          skill_match_score: skillMatchScore,
-          created_at: projectData.created_at?.toDate(),
-          deadline: projectData.deadline?.toDate()
-        });
-      }
-    });
-
-    // Sort by skill match score
-    projects.sort((a, b) => b.skill_match_score - a.skill_match_score);
-
-    res.json({ projects });
+    res.json({ projects: formattedProjects });
 
   } catch (error) {
     console.error('Recommended projects error:', error);
@@ -413,34 +376,37 @@ router.get('/recommended', authenticateToken, requireRole(['student']), async (r
  */
 router.get('/trending-skills', authenticateToken, async (req, res) => {
   try {
-    // Get all open projects
-    const snapshot = await admin.firestore()
-      .collection('projects')
-      .where('status', '==', 'open')
-      .get();
+    const { days = 30 } = req.query;
 
-    const skillCounts = {};
-
-    snapshot.forEach(doc => {
-      const projectData = doc.data();
-      const skills = projectData.required_skills || [];
-
-      skills.forEach(skill => {
-        skillCounts[skill] = (skillCounts[skill] || 0) + 1;
-      });
-    });
-
-    // Sort skills by count
-    const trendingSkills = Object.entries(skillCounts)
-      .sort(([,a], [,b]) => b - a)
-      .slice(0, 10)
-      .map(([skill, count]) => ({ skill, count }));
+    // Use the new recommendations utility
+    const { getTrendingSkills } = require('../utils/recommendations');
+    const trendingSkills = await getTrendingSkills(parseInt(days));
 
     res.json({ trendingSkills });
 
   } catch (error) {
     console.error('Trending skills error:', error);
     res.status(500).json({ error: 'Failed to fetch trending skills' });
+  }
+});
+
+/**
+ * GET /api/projects/skill-suggestions
+ * Get skill suggestions for current student
+ */
+router.get('/skill-suggestions', authenticateToken, requireRole(['student']), async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Use the new recommendations utility
+    const { getSkillSuggestions } = require('../utils/recommendations');
+    const suggestions = await getSkillSuggestions(userId);
+
+    res.json({ skill_suggestions: suggestions });
+
+  } catch (error) {
+    console.error('Skill suggestions error:', error);
+    res.status(500).json({ error: 'Failed to fetch skill suggestions' });
   }
 });
 

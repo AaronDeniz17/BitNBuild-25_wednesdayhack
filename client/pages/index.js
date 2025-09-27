@@ -23,13 +23,8 @@ const HomePage = () => {
   const { isAuthenticated, user } = useAuth();
   const router = useRouter();
 
-  // Redirect authenticated users to their dashboard
-  useEffect(() => {
-    if (isAuthenticated) {
-      const redirectPath = getDefaultRedirect();
-      router.push(redirectPath);
-    }
-  }, [isAuthenticated, router]);
+  // Remove automatic redirect to prevent redirect loops
+  // Users can manually navigate to their dashboard
 
   const features = [
     {

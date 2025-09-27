@@ -8,7 +8,7 @@ import { EyeIcon, EyeSlashIcon, CheckIcon } from '@heroicons/react/24/outline';
 
 import Layout from '../components/Layout/Layout';
 import { useAuth } from '../contexts/AuthContext';
-import { getDefaultRedirect, isValidEmail, isUniversityEmail } from '../lib/auth';
+import { getDefaultRedirect, isValidEmail } from '../lib/auth';
 
 const RegisterPage = () => {
   const { register, isAuthenticated, isLoading } = useAuth();
@@ -27,13 +27,8 @@ const RegisterPage = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errors, setErrors] = useState({});
 
-  // Redirect if already authenticated
-  useEffect(() => {
-    if (isAuthenticated) {
-      const redirectPath = getDefaultRedirect();
-      router.push(redirectPath);
-    }
-  }, [isAuthenticated, router]);
+  // Remove automatic redirect to prevent redirect loops
+  // Manual redirect happens after registration success
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -97,9 +92,15 @@ const RegisterPage = () => {
       const { confirmPassword, ...userData } = formData;
       const result = await register(userData);
       
-      if (result.success) {
-        const redirectPath = getDefaultRedirect();
-        router.push(redirectPath);
+      if (result.success && result.user) {
+        // Direct redirect based on user role from response
+        if (result.user.role === 'student') {
+          router.push('/student/dashboard');
+        } else if (result.user.role === 'client') {
+          router.push('/client/dashboard');
+        } else {
+          router.push('/dashboard');
+        }
       }
     } catch (error) {
       console.error('Registration error:', error);

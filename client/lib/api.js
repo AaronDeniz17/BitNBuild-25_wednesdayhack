@@ -33,10 +33,10 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      // Token expired or invalid
+      // Token expired or invalid - clear storage but don't auto-redirect
       localStorage.removeItem('token');
       localStorage.removeItem('user');
-      window.location.href = '/login';
+      // Let the AuthContext handle the redirect instead of forcing it here
     }
     return Promise.reject(error);
   }
@@ -46,7 +46,6 @@ api.interceptors.response.use(
 export const authAPI = {
   login: (email, password) => api.post('/auth/login', { email, password }),
   register: (userData) => api.post('/auth/register', userData),
-  verifyUniversity: (university, studentId) => api.post('/auth/verify-university', { university, student_id: studentId }),
   getProfile: () => api.get('/auth/profile'),
   updateProfile: (updates) => api.put('/auth/profile', updates),
   logout: () => api.post('/auth/logout'),
@@ -61,6 +60,7 @@ export const projectsAPI = {
   deleteProject: (id) => api.delete(`/projects/${id}`),
   getRecommended: () => api.get('/projects/recommended'),
   getTrendingSkills: () => api.get('/projects/trending-skills'),
+  getSkillSuggestions: () => api.get('/projects/skill-suggestions'),
 };
 
 // Bids API
@@ -130,6 +130,16 @@ export const chatAPI = {
   markMessageRead: (contractId, messageId) => api.put(`/chat/${contractId}/messages/${messageId}/read`),
   getUnreadCount: (contractId) => api.get(`/chat/${contractId}/unread-count`),
   getChatContracts: () => api.get('/chat/contracts'),
+};
+
+// Notifications API
+export const notificationsAPI = {
+  getNotifications: (params = {}) => api.get('/notifications', { params }),
+  getUnreadCount: () => api.get('/notifications/unread-count'),
+  markAsRead: (id) => api.put(`/notifications/${id}/read`),
+  markAllAsRead: () => api.put('/notifications/mark-all-read'),
+  deleteNotification: (id) => api.delete(`/notifications/${id}`),
+  getNotificationTypes: () => api.get('/notifications/types'),
 };
 
 // Admin API

@@ -4,6 +4,7 @@
 const express = require('express');
 const { admin } = require('../config/firebase');
 const { authenticateToken, requireRole } = require('../middleware/auth');
+const { notificationHandlers } = require('../utils/notifications');
 
 const router = express.Router();
 
@@ -179,6 +180,14 @@ router.post('/escrow/release', authenticateToken, requireRole(['client']), async
 
     // Commit transaction
     await batch.commit();
+
+    // Send payment notification to freelancer
+    try {
+      const recipientId = contractData.team_id || contractData.freelancer_id;
+      await notificationHandlers.paymentReceived(transactionData.id, recipientId, amount);
+    } catch (notificationError) {
+      console.error('Failed to send payment notification:', notificationError);
+    }
 
     res.json({
       message: 'Funds released successfully',

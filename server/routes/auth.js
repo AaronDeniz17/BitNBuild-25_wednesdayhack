@@ -27,25 +27,34 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ error: 'Invalid role' });
     }
 
-    // Check if user already exists
+    // Check if user already exists in Firestore
     const existingUser = await admin.firestore()
       .collection('users')
       .where('email', '==', email)
       .get();
 
     if (!existingUser.empty) {
-      return res.status(400).json({ error: 'User already exists' });
+      return res.status(400).json({ error: 'Email already registered. Please use login instead.' });
     }
 
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 12);
 
+    let userRecord;
+    
     // Create user in Firebase Auth
-    const userRecord = await auth.createUser({
-      email,
-      password,
-      displayName: name
-    });
+    try {
+      userRecord = await auth.createUser({
+        email,
+        password,
+        displayName: name
+      });
+    } catch (createError) {
+      if (createError.code === 'auth/email-already-exists') {
+        return res.status(400).json({ error: 'Email already registered. Please use login instead.' });
+      }
+      throw createError;
+    }
 
     // Create user document in Firestore
     const userData = {
@@ -53,7 +62,7 @@ router.post('/register', async (req, res) => {
       email,
       name,
       role,
-      university_verified: false,
+      password: hashedPassword,
       university: university || '',
       created_at: admin.firestore.FieldValue.serverTimestamp(),
       last_login: admin.firestore.FieldValue.serverTimestamp(),
@@ -107,8 +116,7 @@ router.post('/register', async (req, res) => {
         id: userRecord.uid,
         email,
         name,
-        role,
-        university_verified: false
+        role
       }
     });
 
@@ -149,7 +157,11 @@ router.post('/login', async (req, res) => {
 
     // For MVP: Simple password check
     // TODO: Implement proper Firebase Auth verification
-    const isValidPassword = await bcrypt.compare(password, userData.password || '');
+    if (!userData.password) {
+      return res.status(401).json({ error: 'Account setup incomplete. Please register again.' });
+    }
+    
+    const isValidPassword = await bcrypt.compare(password, userData.password);
     
     if (!isValidPassword) {
       return res.status(401).json({ error: 'Invalid credentials' });
@@ -177,8 +189,7 @@ router.post('/login', async (req, res) => {
         id: userData.id,
         email: userData.email,
         name: userData.name,
-        role: userData.role,
-        university_verified: userData.university_verified
+        role: userData.role
       }
     });
 
@@ -188,58 +199,6 @@ router.post('/login', async (req, res) => {
   }
 });
 
-/**
- * POST /api/auth/verify-university
- * Verify university email for students
- */
-router.post('/verify-university', authenticateToken, async (req, res) => {
-  try {
-    const { university, student_id } = req.body;
-    const userId = req.user.id;
-
-    // Only students can verify university
-    if (req.user.role !== 'student') {
-      return res.status(403).json({ error: 'Only students can verify university' });
-    }
-
-    // For MVP: Simple verification
-    // TODO: Implement proper university email verification
-    const isUniversityEmail = email.includes('.edu') || 
-                            email.includes(university.toLowerCase().replace(/\s+/g, ''));
-
-    if (!isUniversityEmail) {
-      return res.status(400).json({ 
-        error: 'Please use your university email address' 
-      });
-    }
-
-    // Update user verification status
-    await admin.firestore()
-      .collection('users')
-      .doc(userId)
-      .update({
-        university_verified: true,
-        university: university
-      });
-
-    // Add verification badge to student profile
-    await admin.firestore()
-      .collection('student_profiles')
-      .doc(userId)
-      .update({
-        badges: admin.firestore.FieldValue.arrayUnion('university-verified')
-      });
-
-    res.json({
-      message: 'University verification successful',
-      university_verified: true
-    });
-
-  } catch (error) {
-    console.error('University verification error:', error);
-    res.status(500).json({ error: 'Verification failed' });
-  }
-});
 
 /**
  * GET /api/auth/profile
@@ -277,7 +236,6 @@ router.get('/profile', authenticateToken, async (req, res) => {
         email: userData.email,
         name: userData.name,
         role: userData.role,
-        university_verified: userData.university_verified,
         university: userData.university,
         created_at: userData.created_at,
         profile_picture: userData.profile_picture

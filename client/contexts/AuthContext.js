@@ -99,21 +99,14 @@ export const AuthProvider = ({ children }) => {
         const storedAuth = getStoredAuth();
         
         if (storedAuth && storedAuth.token && storedAuth.user) {
-          // Verify token is still valid by fetching profile
-          try {
-            const response = await authAPI.getProfile();
-            dispatch({
-              type: AUTH_ACTIONS.LOGIN_SUCCESS,
-              payload: {
-                user: response.data.user,
-                token: storedAuth.token,
-              },
-            });
-          } catch (error) {
-            // Token is invalid, clear stored auth
-            clearAuth();
-            dispatch({ type: AUTH_ACTIONS.LOGOUT });
-          }
+          // Trust stored auth for now (skip API verification)
+          dispatch({
+            type: AUTH_ACTIONS.LOGIN_SUCCESS,
+            payload: {
+              user: storedAuth.user,
+              token: storedAuth.token,
+            },
+          });
         } else {
           dispatch({ type: AUTH_ACTIONS.LOGOUT });
         }
@@ -144,7 +137,7 @@ export const AuthProvider = ({ children }) => {
       });
 
       toast.success('Login successful!');
-      return { success: true };
+      return { success: true, user };
     } catch (error) {
       const errorData = handleAPIError(error);
       dispatch({
@@ -173,7 +166,7 @@ export const AuthProvider = ({ children }) => {
       });
 
       toast.success('Registration successful!');
-      return { success: true };
+      return { success: true, user };
     } catch (error) {
       const errorData = handleAPIError(error);
       dispatch({
@@ -225,34 +218,7 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // Verify university
-  const verifyUniversity = async (university, studentId) => {
-    try {
-      const response = await authAPI.verifyUniversity(university, studentId);
-      
-      // Update user in state
-      dispatch({
-        type: AUTH_ACTIONS.UPDATE_USER,
-        payload: { university_verified: true },
-      });
 
-      // Update stored auth
-      const storedAuth = getStoredAuth();
-      if (storedAuth) {
-        storeAuth({
-          ...storedAuth,
-          user: { ...storedAuth.user, university_verified: true },
-        });
-      }
-
-      toast.success('University verification successful!');
-      return { success: true };
-    } catch (error) {
-      const errorData = handleAPIError(error);
-      toast.error(errorData.message);
-      return { success: false, error: errorData.message };
-    }
-  };
 
   // Clear error
   const clearError = () => {
@@ -271,7 +237,6 @@ export const AuthProvider = ({ children }) => {
     register,
     logout,
     updateUser,
-    verifyUniversity,
     clearError,
     setLoading,
   };

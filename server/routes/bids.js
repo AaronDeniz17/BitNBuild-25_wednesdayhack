@@ -4,6 +4,7 @@
 const express = require('express');
 const { admin } = require('../config/firebase');
 const { authenticateToken, requireRole, requireUniversityVerification } = require('../middleware/auth');
+const { notificationHandlers } = require('../utils/notifications');
 
 const router = express.Router();
 
@@ -84,6 +85,14 @@ router.post('/', authenticateToken, requireRole(['student']), requireUniversityV
       .collection('bids')
       .doc(bidData.id)
       .set(bidData);
+
+    // Send notification to project client
+    try {
+      await notificationHandlers.bidReceived(project_id, bidData.id, projectData.client_id);
+    } catch (notificationError) {
+      console.error('Failed to send bid notification:', notificationError);
+      // Don't fail the bid creation if notification fails
+    }
 
     res.status(201).json({
       message: 'Bid submitted successfully',
@@ -367,6 +376,13 @@ router.put('/:id/accept', authenticateToken, requireRole(['client']), async (req
 
     // Commit transaction
     await batch.commit();
+
+    // Send notification to freelancer
+    try {
+      await notificationHandlers.bidAccepted(bidId, bidData.freelancer_id);
+    } catch (notificationError) {
+      console.error('Failed to send bid accepted notification:', notificationError);
+    }
 
     res.json({
       message: 'Bid accepted successfully',

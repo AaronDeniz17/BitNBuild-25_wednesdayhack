@@ -20,13 +20,8 @@ const LoginPage = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Redirect if already authenticated
-  useEffect(() => {
-    if (isAuthenticated) {
-      const redirectPath = getDefaultRedirect();
-      router.push(redirectPath);
-    }
-  }, [isAuthenticated, router]);
+  // Remove automatic redirect to prevent redirect loops
+  // Manual redirect happens after login success
 
   const handleChange = (e) => {
     setFormData({
@@ -41,9 +36,15 @@ const LoginPage = () => {
 
     try {
       const result = await login(formData.email, formData.password);
-      if (result.success) {
-        const redirectPath = getDefaultRedirect();
-        router.push(redirectPath);
+      if (result.success && result.user) {
+        // Direct redirect based on user role from response
+        if (result.user.role === 'student') {
+          router.push('/student/dashboard');
+        } else if (result.user.role === 'client') {
+          router.push('/client/dashboard');
+        } else {
+          router.push('/dashboard');
+        }
       }
     } catch (error) {
       console.error('Login error:', error);

@@ -79,11 +79,7 @@ export const isAdmin = () => {
   return hasRole('admin');
 };
 
-// Check if user is university verified
-export const isUniversityVerified = () => {
-  const user = getCurrentUser();
-  return user?.university_verified || false;
-};
+
 
 // Format user display name
 export const getUserDisplayName = (user) => {
@@ -150,9 +146,7 @@ export const getDefaultRedirect = () => {
   } else if (user.role === 'client') {
     return '/client/dashboard';
   } else if (user.role === 'student') {
-    if (!user.university_verified) {
-      return '/student/verify-university';
-    }
+    // For now, redirect to dashboard directly. University verification is optional
     return '/student/dashboard';
   }
 
@@ -165,10 +159,7 @@ export const isValidEmail = (email) => {
   return emailRegex.test(email);
 };
 
-// Validate university email
-export const isUniversityEmail = (email) => {
-  return email.includes('.edu') || email.includes('university') || email.includes('college');
-};
+
 
 // Format currency
 export const formatCurrency = (amount) => {
