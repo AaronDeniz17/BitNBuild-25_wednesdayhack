@@ -709,11 +709,17 @@ const ProfilePage = () => {
                         <div className="flex space-x-2">
                           <input
                             type="text"
+                            ref={(inputEl) => {
+                              if (inputEl) {
+                                // Store ref to input element in a data attribute on the parent div
+                                inputEl.parentElement.dataset.inputRef = inputEl.id = 'language-input-' + Date.now();
+                              }
+                            }}
                             placeholder="Add language"
                             className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
                             onKeyPress={(e) => {
-                              if (e.key === 'Enter') {
-                                addLanguage(e.target.value);
+                              if (e.key === 'Enter' && e.target.value.trim()) {
+                                addLanguage(e.target.value.trim());
                                 e.target.value = '';
                               }
                             }}
@@ -721,9 +727,13 @@ const ProfilePage = () => {
                           <button
                             type="button"
                             onClick={(e) => {
-                              const input = e.target.previousElementSibling;
-                              addLanguage(input.value);
-                              input.value = '';
+                              const parentDiv = e.currentTarget.parentElement;
+                              const input = document.getElementById(parentDiv.dataset.inputRef);
+                              if (input && input.value.trim()) {
+                                addLanguage(input.value.trim());
+                                input.value = '';
+                                input.focus();
+                              }
                             }}
                             className="px-3 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700"
                           >

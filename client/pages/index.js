@@ -23,8 +23,13 @@ const HomePage = () => {
   const { isAuthenticated, user } = useAuth();
   const router = useRouter();
 
-  // Remove automatic redirect to prevent redirect loops
-  // Users can manually navigate to their dashboard
+  useEffect(() => {
+    if (isAuthenticated && user) {
+      // Redirect to the appropriate dashboard based on user role
+      const dashboardPath = user.role === 'student' ? '/student/dashboard' : '/client/dashboard';
+      router.replace(dashboardPath);
+    }
+  }, [isAuthenticated, user, router]);
 
   const features = [
     {

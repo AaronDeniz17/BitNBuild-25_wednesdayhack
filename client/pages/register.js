@@ -9,6 +9,7 @@ import { EyeIcon, EyeSlashIcon, CheckIcon } from '@heroicons/react/24/outline';
 import Layout from '../components/Layout/Layout';
 import { useAuth } from '../contexts/AuthContext';
 import { getDefaultRedirect, isValidEmail } from '../lib/auth';
+import { isUniversityEmail } from '../lib/utils';
 
 const RegisterPage = () => {
   const { register, isAuthenticated, isLoading } = useAuth();

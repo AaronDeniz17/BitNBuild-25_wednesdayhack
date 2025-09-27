@@ -31,7 +31,11 @@ const Header = () => {
   };
 
   const navigation = [
-    { name: 'Home', href: '/', icon: HomeIcon },
+    { 
+      name: 'Home', 
+      href: isAuthenticated ? (user?.role === 'student' ? '/student/dashboard' : '/client/dashboard') : '/', 
+      icon: HomeIcon 
+    },
     { name: 'Projects', href: '/projects', icon: BriefcaseIcon },
     { name: 'Teams', href: '/teams', icon: UserGroupIcon },
     { name: 'Leaderboard', href: '/leaderboard', icon: ChartBarIcon },

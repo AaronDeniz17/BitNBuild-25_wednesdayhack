@@ -48,6 +48,23 @@ export const formatDateTime = (date) => {
   });
 };
 
+/**
+ * Check if an email address is from a university domain
+ * @param {string} email - Email address to check
+ * @returns {boolean} True if it's a university email
+ */
+export const isUniversityEmail = (email) => {
+  if (!email) return false;
+  const domain = email.split('@')[1]?.toLowerCase();
+  if (!domain) return false;
+  
+  // Common university email domains
+  return domain.endsWith('.edu') || 
+         domain.endsWith('.ac.uk') || 
+         domain.endsWith('.edu.au') ||
+         domain.endsWith('.ac.in');
+};
+
 // Get relative time (e.g., "2 days ago", "in 3 hours")
 export const getRelativeTime = (date) => {
   if (!date) return '';

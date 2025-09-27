@@ -11,7 +11,8 @@ import {
   CurrencyDollarIcon,
   AcademicCapIcon,
   UserGroupIcon,
-  FireIcon
+  FireIcon,
+  ChartBarIcon
 } from '@heroicons/react/24/outline';
 
 import Layout from '../components/Layout/Layout';

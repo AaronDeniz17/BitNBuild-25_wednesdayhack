@@ -32,7 +32,10 @@ const SettingsPage = () => {
   const [profileData, setProfileData] = useState({
     name: user?.name || '',
     email: user?.email || '',
-    bio: user?.bio || ''
+    bio: user?.bio || '',
+    githubUrl: user?.githubUrl || '',
+    linkedinUrl: user?.linkedinUrl || '',
+    websiteUrl: user?.websiteUrl || ''
   });
   
   const [passwordData, setPasswordData] = useState({
@@ -128,7 +131,32 @@ const SettingsPage = () => {
 
   const handleUpdateProfile = (e) => {
     e.preventDefault();
-    updateProfileMutation.mutate(profileData);
+    
+    // Validate URLs if they are provided
+    const urlFields = {
+      githubUrl: profileData.githubUrl,
+      linkedinUrl: profileData.linkedinUrl,
+      websiteUrl: profileData.websiteUrl
+    };
+
+    // Filter out empty URLs and validate format
+    const validUrls = Object.entries(urlFields).reduce((acc, [key, value]) => {
+      if (!value) return acc; // Skip empty values
+      try {
+        new URL(value); // Will throw error if invalid URL
+        acc[key] = value;
+      } catch (error) {
+        toast.error(`Invalid URL format for ${key.replace('Url', '')}`)
+        throw new Error(`Invalid URL format for ${key}`);
+      }
+      return acc;
+    }, {});
+
+    // Update profile with validated data
+    updateProfileMutation.mutate({
+      ...profileData,
+      ...validUrls
+    });
   };
 
   const handleChangePassword = (e) => {
@@ -260,6 +288,49 @@ const SettingsPage = () => {
                           className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                           placeholder="Tell others about yourself..."
                         />
+                      </div>
+
+                      <div className="space-y-4">
+                        <h3 className="text-sm font-medium text-gray-900">Portfolio Links</h3>
+                        
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            GitHub Profile
+                          </label>
+                          <input
+                            type="url"
+                            value={profileData.githubUrl}
+                            onChange={(e) => setProfileData(prev => ({ ...prev, githubUrl: e.target.value }))}
+                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            placeholder="https://github.com/yourusername"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            LinkedIn Profile
+                          </label>
+                          <input
+                            type="url"
+                            value={profileData.linkedinUrl}
+                            onChange={(e) => setProfileData(prev => ({ ...prev, linkedinUrl: e.target.value }))}
+                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            placeholder="https://linkedin.com/in/yourusername"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            Personal Website
+                          </label>
+                          <input
+                            type="url"
+                            value={profileData.websiteUrl}
+                            onChange={(e) => setProfileData(prev => ({ ...prev, websiteUrl: e.target.value }))}
+                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            placeholder="https://your-website.com"
+                          />
+                        </div>
                       </div>
                       
                       <button

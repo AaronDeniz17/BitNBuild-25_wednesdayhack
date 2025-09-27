@@ -8,7 +8,7 @@ import {
   PlusIcon,
   StarIcon,
   EyeIcon,
-  ExternalLinkIcon
+  ArrowTopRightOnSquareIcon as ExternalLinkIcon
 } from '@heroicons/react/24/outline';
 
 import Layout from '../../components/Layout/Layout';
