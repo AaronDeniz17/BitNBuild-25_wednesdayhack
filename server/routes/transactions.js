@@ -1,471 +1,531 @@
-// Transaction and Escrow routes for GigCampus
-// Handles simulated escrow payments, deposits, and releases
+// Transactions routes for GigCampus
+// Handles payment transactions, earnings, and financial history
 
 const express = require('express');
-const { admin } = require('../config/firebase');
-const { authenticateToken, requireRole } = require('../middleware/auth');
-const { notificationHandlers } = require('../utils/notifications');
+const { v4: uuidv4 } = require('uuid');
+const { admin, db } = require('../config/firebase');
+const { auth, userRateLimit } = require('../middleware/auth');
 
 const router = express.Router();
 
+// Transaction status constants
+const TRANSACTION_STATUS = {
+  PENDING: 'pending',
+  PROCESSING: 'processing',
+  COMPLETED: 'completed',
+  FAILED: 'failed',
+  CANCELLED: 'cancelled',
+  REFUNDED: 'refunded'
+};
+
+// Transaction type constants
+const TRANSACTION_TYPES = {
+  MILESTONE_PAYMENT: 'milestone_payment',
+  PROJECT_PAYMENT: 'project_payment',
+  DEPOSIT: 'deposit',
+  WITHDRAWAL: 'withdrawal',
+  REFUND: 'refund',
+  FEE: 'platform_fee',
+  BONUS: 'bonus'
+};
+
 /**
- * POST /api/transactions/escrow/deposit
- * Deposit funds into escrow (clients only)
+ * GET /api/transactions
+ * Get user's transaction history
  */
-router.post('/escrow/deposit', authenticateToken, requireRole(['client']), async (req, res) => {
+router.get('/', auth, async (req, res) => {
   try {
-    const { contract_id, amount } = req.body;
+    const { type, status, project_id, page = 1, limit = 20 } = req.query;
 
-    if (!contract_id || !amount || amount <= 0) {
-      return res.status(400).json({ error: 'Invalid contract ID or amount' });
-    }
+    let query = db.collection('transactions');
 
-    // Get contract
-    const contractDoc = await admin.firestore()
-      .collection('contracts')
-      .doc(contract_id)
-      .get();
+    // Filter by user involvement (either sender or receiver)
+    const userTransactionsQuery1 = db.collection('transactions')
+      .where('from_user_id', '==', req.user.id);
+    
+    const userTransactionsQuery2 = db.collection('transactions')
+      .where('to_user_id', '==', req.user.id);
 
-    if (!contractDoc.exists) {
-      return res.status(404).json({ error: 'Contract not found' });
-    }
+    // Execute both queries
+    const [fromTransactions, toTransactions] = await Promise.all([
+      userTransactionsQuery1.get(),
+      userTransactionsQuery2.get()
+    ]);
 
-    const contractData = contractDoc.data();
-
-    // Check if user owns the contract
-    if (contractData.client_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    // Check if contract is active
-    if (contractData.status !== 'active') {
-      return res.status(400).json({ error: 'Contract is not active' });
-    }
-
-    // Validate amount doesn't exceed total contract amount
-    if (amount > contractData.total_amount) {
-      return res.status(400).json({ error: 'Amount exceeds contract total' });
-    }
-
-    // Start transaction
-    const batch = admin.firestore().batch();
-
-    // Update contract escrow balance
-    batch.update(contractDoc.ref, {
-      escrow_balance: admin.firestore.FieldValue.increment(amount),
-      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    // Combine and deduplicate results
+    const allTransactionDocs = new Map();
+    
+    fromTransactions.docs.forEach(doc => {
+      allTransactionDocs.set(doc.id, doc);
+    });
+    
+    toTransactions.docs.forEach(doc => {
+      allTransactionDocs.set(doc.id, doc);
     });
 
-    // Create transaction record
-    const transactionData = {
-      id: admin.firestore().collection('transactions').doc().id,
-      contract_id,
-      from_id: req.user.id,
-      to_id: contractData.freelancer_id,
-      amount: parseFloat(amount),
-      type: 'escrow_deposit',
-      status: 'completed',
-      created_at: admin.firestore.FieldValue.serverTimestamp(),
-      processed_at: admin.firestore.FieldValue.serverTimestamp(),
-      description: `Escrow deposit of $${amount} for contract ${contract_id}`
-    };
+    let transactions = Array.from(allTransactionDocs.values()).map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
 
-    const transactionRef = admin.firestore().collection('transactions').doc(transactionData.id);
-    batch.set(transactionRef, transactionData);
+    // Apply filters
+    if (type && Object.values(TRANSACTION_TYPES).includes(type)) {
+      transactions = transactions.filter(t => t.type === type);
+    }
 
-    // Commit transaction
-    await batch.commit();
+    if (status && Object.values(TRANSACTION_STATUS).includes(status)) {
+      transactions = transactions.filter(t => t.status === status);
+    }
+
+    if (project_id) {
+      transactions = transactions.filter(t => t.project_id === project_id);
+    }
+
+    // Sort by creation date (newest first)
+    transactions.sort((a, b) => {
+      const aTime = a.created_at?.toMillis() || 0;
+      const bTime = b.created_at?.toMillis() || 0;
+      return bTime - aTime;
+    });
+
+    // Pagination
+    const pageSize = Math.min(parseInt(limit), 50);
+    const offset = (parseInt(page) - 1) * pageSize;
+    const paginatedTransactions = transactions.slice(offset, offset + pageSize);
+
+    // Enrich with additional data
+    const enrichedTransactions = await Promise.all(
+      paginatedTransactions.map(async (transaction) => {
+        // Get other user info
+        const otherUserId = transaction.from_user_id === req.user.id ? 
+          transaction.to_user_id : transaction.from_user_id;
+        
+        let otherUser = null;
+        if (otherUserId) {
+          const otherUserDoc = await db.collection('users').doc(otherUserId).get();
+          if (otherUserDoc.exists) {
+            const userData = otherUserDoc.data();
+            otherUser = {
+              id: otherUserId,
+              name: userData.display_name,
+              university: userData.university
+            };
+          }
+        }
+
+        // Get project info
+        let project = null;
+        if (transaction.project_id) {
+          const projectDoc = await db.collection('projects').doc(transaction.project_id).get();
+          if (projectDoc.exists) {
+            const projectData = projectDoc.data();
+            project = {
+              id: transaction.project_id,
+              title: projectData.title
+            };
+          }
+        }
+
+        return {
+          ...transaction,
+          direction: transaction.from_user_id === req.user.id ? 'outgoing' : 'incoming',
+          other_user: otherUser,
+          project
+        };
+      })
+    );
 
     res.json({
-      message: 'Funds deposited successfully',
-      transaction: transactionData,
-      new_escrow_balance: contractData.escrow_balance + amount
-    });
-
-  } catch (error) {
-    console.error('Escrow deposit error:', error);
-    res.status(500).json({ error: 'Failed to deposit funds' });
-  }
-});
-
-/**
- * POST /api/transactions/escrow/release
- * Release funds from escrow (clients only)
- */
-router.post('/escrow/release', authenticateToken, requireRole(['client']), async (req, res) => {
-  try {
-    const { contract_id, milestone_id, amount, reason } = req.body;
-
-    if (!contract_id || !amount || amount <= 0) {
-      return res.status(400).json({ error: 'Invalid contract ID or amount' });
-    }
-
-    // Get contract
-    const contractDoc = await admin.firestore()
-      .collection('contracts')
-      .doc(contract_id)
-      .get();
-
-    if (!contractDoc.exists) {
-      return res.status(404).json({ error: 'Contract not found' });
-    }
-
-    const contractData = contractDoc.data();
-
-    // Check if user owns the contract
-    if (contractData.client_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    // Check if contract is active
-    if (contractData.status !== 'active') {
-      return res.status(400).json({ error: 'Contract is not active' });
-    }
-
-    // Check if sufficient escrow balance
-    if (amount > contractData.escrow_balance) {
-      return res.status(400).json({ error: 'Insufficient escrow balance' });
-    }
-
-    // Start transaction
-    const batch = admin.firestore().batch();
-
-    // Update contract escrow balance
-    batch.update(contractDoc.ref, {
-      escrow_balance: admin.firestore.FieldValue.increment(-amount),
-      updated_at: admin.firestore.FieldValue.serverTimestamp()
-    });
-
-    // Create transaction record
-    const transactionData = {
-      id: admin.firestore().collection('transactions').doc().id,
-      contract_id,
-      from_id: req.user.id,
-      to_id: contractData.freelancer_id,
-      amount: parseFloat(amount),
-      type: 'milestone_payment',
-      status: 'completed',
-      created_at: admin.firestore.FieldValue.serverTimestamp(),
-      processed_at: admin.firestore.FieldValue.serverTimestamp(),
-      description: reason || `Milestone payment of $${amount}`,
-      milestone_id: milestone_id || null
-    };
-
-    const transactionRef = admin.firestore().collection('transactions').doc(transactionData.id);
-    batch.set(transactionRef, transactionData);
-
-    // Update freelancer wallet (simulated)
-    if (contractData.team_id) {
-      // Handle team payment split
-      await handleTeamPaymentSplit(contractData.team_id, amount, batch);
-    } else {
-      // Individual freelancer payment
-      await updateFreelancerWallet(contractData.freelancer_id, amount, batch);
-    }
-
-    // Update milestone status if milestone_id provided
-    if (milestone_id) {
-      const milestoneDoc = await admin.firestore()
-        .collection('milestones')
-        .doc(milestone_id)
-        .get();
-
-      if (milestoneDoc.exists) {
-        batch.update(milestoneDoc.ref, {
-          status: 'approved',
-          approved_at: admin.firestore.FieldValue.serverTimestamp()
-        });
+      success: true,
+      data: enrichedTransactions,
+      pagination: {
+        page: parseInt(page),
+        limit: pageSize,
+        total: transactions.length
       }
-    }
-
-    // Commit transaction
-    await batch.commit();
-
-    // Send payment notification to freelancer
-    try {
-      const recipientId = contractData.team_id || contractData.freelancer_id;
-      await notificationHandlers.paymentReceived(transactionData.id, recipientId, amount);
-    } catch (notificationError) {
-      console.error('Failed to send payment notification:', notificationError);
-    }
-
-    res.json({
-      message: 'Funds released successfully',
-      transaction: transactionData,
-      new_escrow_balance: contractData.escrow_balance - amount
     });
 
   } catch (error) {
-    console.error('Escrow release error:', error);
-    res.status(500).json({ error: 'Failed to release funds' });
+    console.error('Get transactions error:', error);
+    res.status(500).json({ error: 'Failed to get transactions' });
   }
 });
 
 /**
- * POST /api/transactions/escrow/partial-release
- * Release partial funds based on completion percentage
+ * GET /api/transactions/:id
+ * Get specific transaction details
  */
-router.post('/escrow/partial-release', authenticateToken, requireRole(['client']), async (req, res) => {
+router.get('/:id', auth, async (req, res) => {
   try {
-    const { contract_id, completion_percentage } = req.body;
-
-    if (!contract_id || !completion_percentage || completion_percentage <= 0 || completion_percentage > 100) {
-      return res.status(400).json({ error: 'Invalid contract ID or completion percentage' });
+    const { id } = req.params;
+    
+    const transactionDoc = await db.collection('transactions').doc(id).get();
+    
+    if (!transactionDoc.exists) {
+      return res.status(404).json({ error: 'Transaction not found' });
     }
 
-    // Get contract
-    const contractDoc = await admin.firestore()
-      .collection('contracts')
-      .doc(contract_id)
-      .get();
-
-    if (!contractDoc.exists) {
-      return res.status(404).json({ error: 'Contract not found' });
-    }
-
-    const contractData = contractDoc.data();
-
-    // Check if user owns the contract
-    if (contractData.client_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    // Calculate partial amount
-    const partialAmount = (contractData.total_amount * completion_percentage) / 100;
-    const availableAmount = Math.min(partialAmount, contractData.escrow_balance);
-
-    if (availableAmount <= 0) {
-      return res.status(400).json({ error: 'No funds available for release' });
-    }
-
-    // Start transaction
-    const batch = admin.firestore().batch();
-
-    // Update contract escrow balance
-    batch.update(contractDoc.ref, {
-      escrow_balance: admin.firestore.FieldValue.increment(-availableAmount),
-      updated_at: admin.firestore.FieldValue.serverTimestamp()
-    });
-
-    // Create transaction record
-    const transactionData = {
-      id: admin.firestore().collection('transactions').doc().id,
-      contract_id,
-      from_id: req.user.id,
-      to_id: contractData.freelancer_id,
-      amount: availableAmount,
-      type: 'milestone_payment',
-      status: 'completed',
-      created_at: admin.firestore.FieldValue.serverTimestamp(),
-      processed_at: admin.firestore.FieldValue.serverTimestamp(),
-      description: `Partial payment of $${availableAmount} (${completion_percentage}% completion)`
-    };
-
-    const transactionRef = admin.firestore().collection('transactions').doc(transactionData.id);
-    batch.set(transactionRef, transactionData);
-
-    // Update freelancer wallet
-    if (contractData.team_id) {
-      await handleTeamPaymentSplit(contractData.team_id, availableAmount, batch);
-    } else {
-      await updateFreelancerWallet(contractData.freelancer_id, availableAmount, batch);
-    }
-
-    // Commit transaction
-    await batch.commit();
-
-    res.json({
-      message: 'Partial funds released successfully',
-      transaction: transactionData,
-      released_amount: availableAmount,
-      new_escrow_balance: contractData.escrow_balance - availableAmount
-    });
-
-  } catch (error) {
-    console.error('Partial release error:', error);
-    res.status(500).json({ error: 'Failed to release partial funds' });
-  }
-});
-
-/**
- * GET /api/transactions/contract/:contract_id
- * Get all transactions for a contract
- */
-router.get('/contract/:contract_id', authenticateToken, async (req, res) => {
-  try {
-    const contractId = req.params.contract_id;
-
-    // Get contract
-    const contractDoc = await admin.firestore()
-      .collection('contracts')
-      .doc(contractId)
-      .get();
-
-    if (!contractDoc.exists) {
-      return res.status(404).json({ error: 'Contract not found' });
-    }
-
-    const contractData = contractDoc.data();
-
-    // Check if user has access to this contract
-    const hasAccess = contractData.client_id === req.user.id || 
-                     contractData.freelancer_id === req.user.id ||
-                     (contractData.team_id && await isTeamMember(contractData.team_id, req.user.id));
-
+    const transactionData = transactionDoc.data();
+    
+    // Check if user has access to this transaction
+    const hasAccess = transactionData.from_user_id === req.user.id || 
+                     transactionData.to_user_id === req.user.id ||
+                     req.user.role === 'admin';
+    
     if (!hasAccess) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    // Get transactions
-    const transactionsSnapshot = await admin.firestore()
-      .collection('transactions')
-      .where('contract_id', '==', contractId)
-      .orderBy('created_at', 'desc')
-      .get();
+    // Get additional info
+    const [fromUserDoc, toUserDoc, projectDoc, contractDoc, milestoneDoc] = await Promise.all([
+      transactionData.from_user_id ? db.collection('users').doc(transactionData.from_user_id).get() : null,
+      transactionData.to_user_id ? db.collection('users').doc(transactionData.to_user_id).get() : null,
+      transactionData.project_id ? db.collection('projects').doc(transactionData.project_id).get() : null,
+      transactionData.contract_id ? db.collection('contracts').doc(transactionData.contract_id).get() : null,
+      transactionData.milestone_id ? db.collection('milestones').doc(transactionData.milestone_id).get() : null
+    ]);
 
-    const transactions = [];
-    transactionsSnapshot.forEach(doc => {
-      transactions.push({
-        id: doc.id,
-        ...doc.data(),
-        created_at: doc.data().created_at?.toDate(),
-        processed_at: doc.data().processed_at?.toDate()
-      });
-    });
+    const transaction = {
+      id,
+      ...transactionData,
+      from_user: fromUserDoc?.exists ? {
+        id: transactionData.from_user_id,
+        name: fromUserDoc.data().display_name,
+        university: fromUserDoc.data().university
+      } : null,
+      to_user: toUserDoc?.exists ? {
+        id: transactionData.to_user_id,
+        name: toUserDoc.data().display_name,
+        university: toUserDoc.data().university
+      } : null,
+      project: projectDoc?.exists ? {
+        id: transactionData.project_id,
+        title: projectDoc.data().title
+      } : null,
+      contract: contractDoc?.exists ? {
+        id: transactionData.contract_id,
+        status: contractDoc.data().status
+      } : null,
+      milestone: milestoneDoc?.exists ? {
+        id: transactionData.milestone_id,
+        title: milestoneDoc.data().title
+      } : null,
+      direction: transactionData.from_user_id === req.user.id ? 'outgoing' : 'incoming'
+    };
 
     res.json({
-      contract: {
-        id: contractData.id,
-        total_amount: contractData.total_amount,
-        escrow_balance: contractData.escrow_balance,
-        status: contractData.status
-      },
-      transactions
+      success: true,
+      data: transaction
     });
 
   } catch (error) {
-    console.error('Transactions fetch error:', error);
-    res.status(500).json({ error: 'Failed to fetch transactions' });
+    console.error('Get transaction error:', error);
+    res.status(500).json({ error: 'Failed to get transaction' });
   }
 });
 
 /**
- * GET /api/transactions/wallet
- * Get user's wallet balance and transaction history
+ * GET /api/transactions/stats/summary
+ * Get user's financial summary
  */
-router.get('/wallet', authenticateToken, async (req, res) => {
+router.get('/stats/summary', auth, async (req, res) => {
   try {
-    const userId = req.user.id;
+    const { period = '30d' } = req.query;
 
-    // Get user's wallet balance (simulated)
-    const walletDoc = await admin.firestore()
-      .collection('user_wallets')
-      .doc(userId)
+    // Calculate date range
+    let startDate = new Date();
+    switch (period) {
+      case '7d':
+        startDate.setDate(startDate.getDate() - 7);
+        break;
+      case '30d':
+        startDate.setDate(startDate.getDate() - 30);
+        break;
+      case '90d':
+        startDate.setDate(startDate.getDate() - 90);
+        break;
+      case '1y':
+        startDate.setFullYear(startDate.getFullYear() - 1);
+        break;
+      default:
+        startDate.setDate(startDate.getDate() - 30);
+    }
+
+    // Get transactions in the period
+    const [incomingQuery, outgoingQuery] = await Promise.all([
+      db.collection('transactions')
+        .where('to_user_id', '==', req.user.id)
+        .where('status', '==', TRANSACTION_STATUS.COMPLETED)
+        .where('created_at', '>=', admin.firestore.Timestamp.fromDate(startDate))
+        .get(),
+      db.collection('transactions')
+        .where('from_user_id', '==', req.user.id)
+        .where('status', '==', TRANSACTION_STATUS.COMPLETED)
+        .where('created_at', '>=', admin.firestore.Timestamp.fromDate(startDate))
+        .get()
+    ]);
+
+    const incomingTransactions = incomingQuery.docs.map(doc => doc.data());
+    const outgoingTransactions = outgoingQuery.docs.map(doc => doc.data());
+
+    // Calculate totals
+    const totalEarnings = incomingTransactions
+      .filter(t => [TRANSACTION_TYPES.MILESTONE_PAYMENT, TRANSACTION_TYPES.PROJECT_PAYMENT, TRANSACTION_TYPES.BONUS].includes(t.type))
+      .reduce((sum, t) => sum + (t.amount || 0), 0);
+
+    const totalSpent = outgoingTransactions
+      .filter(t => [TRANSACTION_TYPES.MILESTONE_PAYMENT, TRANSACTION_TYPES.PROJECT_PAYMENT].includes(t.type))
+      .reduce((sum, t) => sum + (t.amount || 0), 0);
+
+    const platformFees = outgoingTransactions
+      .filter(t => t.type === TRANSACTION_TYPES.FEE)
+      .reduce((sum, t) => sum + (t.amount || 0), 0);
+
+    // Get pending transactions
+    const pendingQuery = await db.collection('transactions')
+      .where('from_user_id', '==', req.user.id)
+      .where('status', '==', TRANSACTION_STATUS.PENDING)
       .get();
 
-    const walletData = walletDoc.exists ? walletDoc.data() : { balance: 0 };
+    const pendingAmount = pendingQuery.docs
+      .map(doc => doc.data())
+      .reduce((sum, t) => sum + (t.amount || 0), 0);
 
-    // Get recent transactions
-    const transactionsSnapshot = await admin.firestore()
-      .collection('transactions')
-      .where('to_id', '==', userId)
-      .orderBy('created_at', 'desc')
-      .limit(20)
-      .get();
-
-    const transactions = [];
-    transactionsSnapshot.forEach(doc => {
-      transactions.push({
-        id: doc.id,
-        ...doc.data(),
-        created_at: doc.data().created_at?.toDate(),
-        processed_at: doc.data().processed_at?.toDate()
-      });
+    // Calculate earnings by type
+    const earningsByType = {};
+    Object.values(TRANSACTION_TYPES).forEach(type => {
+      earningsByType[type] = incomingTransactions
+        .filter(t => t.type === type)
+        .reduce((sum, t) => sum + (t.amount || 0), 0);
     });
 
+    // Get recent transactions
+    const recentTransactions = [...incomingTransactions, ...outgoingTransactions]
+      .sort((a, b) => b.created_at.toMillis() - a.created_at.toMillis())
+      .slice(0, 5)
+      .map(t => ({
+        id: t.id,
+        type: t.type,
+        amount: t.amount,
+        description: t.description,
+        created_at: t.created_at,
+        direction: t.from_user_id === req.user.id ? 'outgoing' : 'incoming'
+      }));
+
     res.json({
-      wallet: walletData,
-      transactions
+      success: true,
+      data: {
+        period,
+        total_earnings: Math.round(totalEarnings * 100) / 100,
+        total_spent: Math.round(totalSpent * 100) / 100,
+        platform_fees: Math.round(platformFees * 100) / 100,
+        pending_amount: Math.round(pendingAmount * 100) / 100,
+        net_earnings: Math.round((totalEarnings - totalSpent - platformFees) * 100) / 100,
+        earnings_by_type: earningsByType,
+        recent_transactions: recentTransactions
+      }
     });
 
   } catch (error) {
-    console.error('Wallet fetch error:', error);
-    res.status(500).json({ error: 'Failed to fetch wallet data' });
+    console.error('Get transaction stats error:', error);
+    res.status(500).json({ error: 'Failed to get transaction statistics' });
   }
 });
 
-// Helper function to handle team payment splits
-async function handleTeamPaymentSplit(teamId, amount, batch) {
+/**
+ * POST /api/transactions/withdraw
+ * Request withdrawal of earnings
+ */
+router.post('/withdraw', auth, userRateLimit(3, 60 * 60 * 1000), async (req, res) => {
   try {
-    // Get team data
-    const teamDoc = await admin.firestore()
-      .collection('teams')
-      .doc(teamId)
+    const { amount, method, account_details } = req.body;
+
+    // Validation
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ error: 'Valid amount is required' });
+    }
+
+    if (!method || !account_details) {
+      return res.status(400).json({ error: 'Withdrawal method and account details are required' });
+    }
+
+    const withdrawalAmount = parseFloat(amount);
+    const minimumWithdrawal = 10; // $10 minimum
+
+    if (withdrawalAmount < minimumWithdrawal) {
+      return res.status(400).json({ error: `Minimum withdrawal amount is $${minimumWithdrawal}` });
+    }
+
+    // Check user's available balance
+    const userDoc = await db.collection('users').doc(req.user.id).get();
+    const userData = userDoc.data();
+    const availableBalance = userData.available_balance || 0;
+
+    if (withdrawalAmount > availableBalance) {
+      return res.status(400).json({ error: 'Insufficient balance' });
+    }
+
+    // Check for pending withdrawals
+    const pendingWithdrawalsSnapshot = await db.collection('transactions')
+      .where('from_user_id', '==', req.user.id)
+      .where('type', '==', TRANSACTION_TYPES.WITHDRAWAL)
+      .where('status', 'in', [TRANSACTION_STATUS.PENDING, TRANSACTION_STATUS.PROCESSING])
       .get();
 
-    if (!teamDoc.exists) {
-      throw new Error('Team not found');
+    if (!pendingWithdrawalsSnapshot.empty) {
+      return res.status(400).json({ error: 'You have a pending withdrawal request' });
     }
 
-    const teamData = teamDoc.data();
-    const memberIds = teamData.member_ids || [];
+    const transactionId = uuidv4();
+    
+    const transactionData = {
+      id: transactionId,
+      from_user_id: req.user.id,
+      to_user_id: null, // Platform withdrawal
+      amount: withdrawalAmount,
+      type: TRANSACTION_TYPES.WITHDRAWAL,
+      status: TRANSACTION_STATUS.PENDING,
+      description: `Withdrawal request - ${method}`,
+      withdrawal_method: method,
+      account_details: account_details, // In real app, this should be encrypted
+      created_at: admin.firestore.FieldValue.serverTimestamp(),
+      processed_at: null
+    };
 
-    if (memberIds.length === 0) {
-      throw new Error('Team has no members');
-    }
-
-    // Calculate equal split (for MVP - can be enhanced with custom splits)
-    const splitAmount = amount / memberIds.length;
-
-    // Update team wallet
-    batch.update(teamDoc.ref, {
-      team_wallet_balance: admin.firestore.FieldValue.increment(amount)
+    // Create withdrawal request and update user balance
+    await db.runTransaction(async (transaction) => {
+      // Create withdrawal transaction
+      transaction.set(db.collection('transactions').doc(transactionId), transactionData);
+      
+      // Update user's available balance
+      transaction.update(db.collection('users').doc(req.user.id), {
+        available_balance: availableBalance - withdrawalAmount,
+        pending_withdrawals: admin.firestore.FieldValue.increment(withdrawalAmount),
+        updated_at: admin.firestore.FieldValue.serverTimestamp()
+      });
     });
 
-    // Update individual member wallets
-    for (const memberId of memberIds) {
-      await updateFreelancerWallet(memberId, splitAmount, batch);
-    }
+    res.status(201).json({
+      success: true,
+      message: 'Withdrawal request submitted successfully',
+      data: { id: transactionId, ...transactionData }
+    });
 
   } catch (error) {
-    console.error('Team payment split error:', error);
-    throw error;
+    console.error('Withdrawal request error:', error);
+    res.status(500).json({ error: 'Failed to process withdrawal request' });
   }
-}
+});
 
-// Helper function to update freelancer wallet
-async function updateFreelancerWallet(freelancerId, amount, batch) {
-  const walletRef = admin.firestore().collection('user_wallets').doc(freelancerId);
-  
-  // Get current wallet or create new one
-  const walletDoc = await walletRef.get();
-  
-  if (walletDoc.exists) {
-    batch.update(walletRef, {
-      balance: admin.firestore.FieldValue.increment(amount),
-      last_updated: admin.firestore.FieldValue.serverTimestamp()
+/**
+ * GET /api/transactions/withdraw/methods
+ * Get available withdrawal methods
+ */
+router.get('/withdraw/methods', auth, async (req, res) => {
+  try {
+    const methods = [
+      {
+        id: 'paypal',
+        name: 'PayPal',
+        description: 'Withdraw to your PayPal account',
+        processing_time: '1-2 business days',
+        minimum_amount: 10,
+        fee_percentage: 0,
+        required_fields: ['email']
+      },
+      {
+        id: 'bank_transfer',
+        name: 'Bank Transfer',
+        description: 'Direct deposit to your bank account',
+        processing_time: '3-5 business days',
+        minimum_amount: 25,
+        fee_percentage: 0,
+        required_fields: ['account_number', 'routing_number', 'account_holder_name']
+      },
+      {
+        id: 'stripe',
+        name: 'Stripe Connect',
+        description: 'Instant transfer via Stripe',
+        processing_time: 'Instant',
+        minimum_amount: 5,
+        fee_percentage: 2.9,
+        required_fields: ['stripe_account_id']
+      }
+    ];
+
+    res.json({
+      success: true,
+      data: methods
     });
-  } else {
-    batch.set(walletRef, {
-      user_id: freelancerId,
-      balance: amount,
-      created_at: admin.firestore.FieldValue.serverTimestamp(),
-      last_updated: admin.firestore.FieldValue.serverTimestamp()
-    });
+
+  } catch (error) {
+    console.error('Get withdrawal methods error:', error);
+    res.status(500).json({ error: 'Failed to get withdrawal methods' });
   }
-}
+});
 
-// Helper function to check if user is team member
-async function isTeamMember(teamId, userId) {
-  const teamDoc = await admin.firestore()
-    .collection('teams')
-    .doc(teamId)
-    .get();
+/**
+ * PUT /api/transactions/:id/cancel
+ * Cancel a pending transaction (user or admin)
+ */
+router.put('/:id/cancel', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    
+    const transactionDoc = await db.collection('transactions').doc(id).get();
+    
+    if (!transactionDoc.exists) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
 
-  if (!teamDoc.exists) return false;
+    const transactionData = transactionDoc.data();
+    
+    // Check permissions
+    const canCancel = transactionData.from_user_id === req.user.id || 
+                     req.user.role === 'admin';
+    
+    if (!canCancel) {
+      return res.status(403).json({ error: 'You can only cancel your own transactions' });
+    }
 
-  const teamData = teamDoc.data();
-  return teamData.member_ids && teamData.member_ids.includes(userId);
-}
+    // Can only cancel pending transactions
+    if (transactionData.status !== TRANSACTION_STATUS.PENDING) {
+      return res.status(400).json({ error: 'Can only cancel pending transactions' });
+    }
+
+    await db.runTransaction(async (transaction) => {
+      // Update transaction status
+      transaction.update(db.collection('transactions').doc(id), {
+        status: TRANSACTION_STATUS.CANCELLED,
+        cancelled_at: admin.firestore.FieldValue.serverTimestamp(),
+        cancellation_reason: reason || 'Cancelled by user',
+        updated_at: admin.firestore.FieldValue.serverTimestamp()
+      });
+
+      // If withdrawal, restore user balance
+      if (transactionData.type === TRANSACTION_TYPES.WITHDRAWAL) {
+        const userDoc = await transaction.get(db.collection('users').doc(transactionData.from_user_id));
+        if (userDoc.exists) {
+          const userData = userDoc.data();
+          transaction.update(db.collection('users').doc(transactionData.from_user_id), {
+            available_balance: (userData.available_balance || 0) + transactionData.amount,
+            pending_withdrawals: admin.firestore.FieldValue.increment(-transactionData.amount),
+            updated_at: admin.firestore.FieldValue.serverTimestamp()
+          });
+        }
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Transaction cancelled successfully'
+    });
+
+  } catch (error) {
+    console.error('Cancel transaction error:', error);
+    res.status(500).json({ error: 'Failed to cancel transaction' });
+  }
+});
 
 module.exports = router;

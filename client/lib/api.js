@@ -17,7 +17,19 @@ const api = axios.create({
 // Request interceptor to add auth token
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('token');
+    // Try to get token from auth storage first, then fallback to direct localStorage
+    let token = null;
+    try {
+      const authData = localStorage.getItem('gigcampus_auth');
+      if (authData) {
+        const parsed = JSON.parse(authData);
+        token = parsed.token;
+      }
+    } catch {
+      // Fallback to direct token storage
+      token = localStorage.getItem('token');
+    }
+    
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -44,7 +56,7 @@ api.interceptors.response.use(
 
 // Auth API
 export const authAPI = {
-  login: (email, password) => api.post('/auth/login', { email, password }),
+  login: (idToken) => api.post('/auth/login', { idToken }),
   register: (userData) => api.post('/auth/register', userData),
   getProfile: () => api.get('/auth/profile'),
   updateProfile: (updates) => api.put('/auth/profile', updates),
@@ -68,6 +80,7 @@ export const bidsAPI = {
   getBids: (params = {}) => api.get('/bids', { params }),
   getBid: (id) => api.get(`/bids/${id}`),
   createBid: (bidData) => api.post('/bids', bidData),
+  getProjectBids: (projectId) => api.get(`/bids/project/${projectId}`),
   acceptBid: (id) => api.put(`/bids/${id}/accept`),
   rejectBid: (id) => api.put(`/bids/${id}/reject`),
   deleteBid: (id) => api.delete(`/bids/${id}`),
@@ -94,7 +107,8 @@ export const milestonesAPI = {
 
 // Teams API
 export const teamsAPI = {
-  getTeams: (params = {}) => api.get('/teams', { params }),
+  getAllTeams: (params = {}) => api.get('/teams', { params }),
+  getMyTeams: () => api.get('/teams/my-teams'),
   getTeam: (id) => api.get(`/teams/${id}`),
   createTeam: (teamData) => api.post('/teams', teamData),
   joinTeam: (id) => api.post(`/teams/${id}/join`),
@@ -125,11 +139,18 @@ export const reviewsAPI = {
 
 // Chat API
 export const chatAPI = {
-  getMessages: (contractId, params = {}) => api.get(`/chat/${contractId}/messages`, { params }),
+  getContractMessages: (contractId, params = {}) => api.get(`/chat/${contractId}/messages`, { params }),
   sendMessage: (contractId, message, type = 'text', fileUrl = null) => api.post(`/chat/${contractId}/messages`, { message, type, file_url: fileUrl }),
   markMessageRead: (contractId, messageId) => api.put(`/chat/${contractId}/messages/${messageId}/read`),
   getUnreadCount: (contractId) => api.get(`/chat/${contractId}/unread-count`),
   getChatContracts: () => api.get('/chat/contracts'),
+};
+
+// Leaderboard API
+export const leaderboardAPI = {
+  getLeaderboard: (category = 'overall', timeFilter = 'all-time') => api.get('/leaderboard', { params: { category, time_filter: timeFilter } }),
+  getUserRanking: (userId) => api.get(`/leaderboard/user/${userId}`),
+  getTopPerformers: (limit = 10) => api.get('/leaderboard/top', { params: { limit } }),
 };
 
 // Notifications API

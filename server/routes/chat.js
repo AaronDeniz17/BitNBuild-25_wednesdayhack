@@ -1,421 +1,518 @@
 // Chat routes for GigCampus
-// Handles real-time project communication
+// Handles real-time messaging and conversations
 
 const express = require('express');
-const { admin } = require('../config/firebase');
-const { authenticateToken } = require('../middleware/auth');
+const { v4: uuidv4 } = require('uuid');
+const { admin, db } = require('../config/firebase');
+const { auth, userRateLimit } = require('../middleware/auth');
 
 const router = express.Router();
 
 /**
- * GET /api/chat/:contractId/messages
- * Get chat messages for a contract
+ * GET /api/chat/conversations
+ * Get user's conversations
  */
-router.get('/:contractId/messages', authenticateToken, async (req, res) => {
+router.get('/conversations', auth, async (req, res) => {
   try {
-    const contractId = req.params.contractId;
-    const { page = 1, limit = 50 } = req.query;
+    const { page = 1, limit = 20 } = req.query;
 
-    // Check if user has access to this contract
-    const contractDoc = await admin.firestore()
-      .collection('contracts')
-      .doc(contractId)
+    // Get conversations where user is a participant
+    const conversationsSnapshot = await db.collection('conversations')
+      .where('participants', 'array-contains', req.user.id)
+      .orderBy('last_message_at', 'desc')
+      .limit(parseInt(limit))
       .get();
 
-    if (!contractDoc.exists) {
-      return res.status(404).json({ error: 'Contract not found' });
-    }
+    const conversations = [];
 
-    const contractData = contractDoc.data();
+    for (const doc of conversationsSnapshot.docs) {
+      const conversationData = doc.data();
+      
+      // Get other participants' info
+      const otherParticipantIds = conversationData.participants.filter(id => id !== req.user.id);
+      const participants = [];
 
-    const hasAccess = contractData.client_id === req.user.id || 
-                     contractData.freelancer_id === req.user.id ||
-                     (contractData.team_id && await isTeamMember(contractData.team_id, req.user.id));
+      for (const participantId of otherParticipantIds) {
+        const userDoc = await db.collection('users').doc(participantId).get();
+        if (userDoc.exists) {
+          const userData = userDoc.data();
+          participants.push({
+            id: userData.id,
+            name: userData.name,
+            university: userData.university,
+            university_verified: userData.university_verified
+          });
+        }
+      }
 
-    if (!hasAccess) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
+      // Get unread count for this user
+      const unreadCount = await getUnreadCount(doc.id, req.user.id);
 
-    // Get messages
-    let query = admin.firestore()
-      .collection('chat_messages')
-      .where('contract_id', '==', contractId)
-      .orderBy('created_at', 'desc');
-
-    // Apply pagination
-    const offset = (parseInt(page) - 1) * parseInt(limit);
-    query = query.limit(parseInt(limit)).offset(offset);
-
-    const snapshot = await query.get();
-    const messages = [];
-
-    for (const doc of snapshot.docs) {
-      const messageData = doc.data();
-
-      // Get sender information
-      const senderDoc = await admin.firestore()
-        .collection('users')
-        .doc(messageData.sender_id)
-        .get();
-
-      const senderData = senderDoc.exists ? senderDoc.data() : null;
-
-      messages.push({
+      conversations.push({
         id: doc.id,
-        ...messageData,
-        created_at: messageData.created_at?.toDate(),
-        sender: senderData ? {
-          id: senderData.id,
-          name: senderData.name,
-          role: senderData.role
-        } : null
+        ...conversationData,
+        participants,
+        unread_count: unreadCount
       });
     }
 
-    // Reverse to get chronological order
-    messages.reverse();
-
-    res.json({ messages });
+    res.json({
+      success: true,
+      data: conversations
+    });
 
   } catch (error) {
-    console.error('Chat messages fetch error:', error);
-    res.status(500).json({ error: 'Failed to fetch chat messages' });
+    console.error('Get conversations error:', error);
+    res.status(500).json({ error: 'Failed to get conversations' });
   }
 });
 
 /**
- * POST /api/chat/:contractId/messages
- * Send a new message
+ * POST /api/chat/conversations
+ * Create a new conversation
  */
-router.post('/:contractId/messages', authenticateToken, async (req, res) => {
+router.post('/conversations', auth, userRateLimit(20, 60 * 60 * 1000), async (req, res) => {
   try {
-    const contractId = req.params.contractId;
-    const { message, type = 'text', file_url } = req.body;
+    const { participant_id } = req.body;
 
-    if (!message && !file_url) {
-      return res.status(400).json({ error: 'Message content is required' });
+    if (!participant_id) {
+      return res.status(400).json({ error: 'Participant ID is required' });
     }
 
-    // Check if user has access to this contract
-    const contractDoc = await admin.firestore()
-      .collection('contracts')
-      .doc(contractId)
+    if (participant_id === req.user.id) {
+      return res.status(400).json({ error: 'Cannot create conversation with yourself' });
+    }
+
+    // Check if participant exists
+    const participantDoc = await db.collection('users').doc(participant_id).get();
+    if (!participantDoc.exists) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Check if conversation already exists
+    const existingConversation = await db.collection('conversations')
+      .where('participants', 'array-contains', req.user.id)
       .get();
 
-    if (!contractDoc.exists) {
-      return res.status(404).json({ error: 'Contract not found' });
+    let conversationId = null;
+
+    for (const doc of existingConversation.docs) {
+      const data = doc.data();
+      if (data.participants.includes(participant_id) && data.participants.length === 2) {
+        conversationId = doc.id;
+        break;
+      }
     }
 
-    const contractData = contractDoc.data();
+    // If conversation doesn't exist, create it
+    if (!conversationId) {
+      conversationId = uuidv4();
+      
+      const conversationData = {
+        id: conversationId,
+        participants: [req.user.id, participant_id],
+        created_at: admin.firestore.FieldValue.serverTimestamp(),
+        last_message_at: admin.firestore.FieldValue.serverTimestamp(),
+        last_message: null,
+        last_message_sender_id: null
+      };
 
-    const hasAccess = contractData.client_id === req.user.id || 
-                     contractData.freelancer_id === req.user.id ||
-                     (contractData.team_id && await isTeamMember(contractData.team_id, req.user.id));
-
-    if (!hasAccess) {
-      return res.status(403).json({ error: 'Access denied' });
+      await db.collection('conversations').doc(conversationId).set(conversationData);
     }
 
-    // Create message
-    const messageData = {
-      id: admin.firestore().collection('chat_messages').doc().id,
-      contract_id: contractId,
-      sender_id: req.user.id,
-      message: message || '',
-      type,
-      file_url: file_url || null,
-      created_at: admin.firestore.FieldValue.serverTimestamp(),
-      is_read: false,
-      read_by: [req.user.id] // Sender has read their own message
-    };
+    // Get the conversation with participant info
+    const conversationDoc = await db.collection('conversations').doc(conversationId).get();
+    const conversationData = conversationDoc.data();
 
-    await admin.firestore()
-      .collection('chat_messages')
-      .doc(messageData.id)
-      .set(messageData);
+    const participantData = participantDoc.data();
+    const participants = [{
+      id: participantData.id,
+      name: participantData.name,
+      university: participantData.university,
+      university_verified: participantData.university_verified
+    }];
 
-    // Get sender information for response
-    const senderDoc = await admin.firestore()
-      .collection('users')
-      .doc(req.user.id)
-      .get();
-
-    const senderData = senderDoc.exists ? senderDoc.data() : null;
-
-    res.status(201).json({
-      message: 'Message sent successfully',
-      chat_message: {
-        id: messageData.id,
-        ...messageData,
-        created_at: messageData.created_at?.toDate(),
-        sender: senderData ? {
-          id: senderData.id,
-          name: senderData.name,
-          role: senderData.role
-        } : null
+    res.json({
+      success: true,
+      data: {
+        id: conversationId,
+        ...conversationData,
+        participants
       }
     });
 
   } catch (error) {
-    console.error('Chat message creation error:', error);
+    console.error('Create conversation error:', error);
+    res.status(500).json({ error: 'Failed to create conversation' });
+  }
+});
+
+/**
+ * GET /api/chat/conversations/:id/messages
+ * Get messages for a conversation
+ */
+router.get('/conversations/:id/messages', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { page = 1, limit = 50, before } = req.query;
+
+    // Check if user is participant in this conversation
+    const conversationDoc = await db.collection('conversations').doc(id).get();
+    
+    if (!conversationDoc.exists) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    const conversationData = conversationDoc.data();
+    
+    if (!conversationData.participants.includes(req.user.id)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    let query = db.collection('messages')
+      .where('conversation_id', '==', id)
+      .orderBy('created_at', 'desc');
+
+    // Pagination with before cursor
+    if (before) {
+      const beforeDate = admin.firestore.Timestamp.fromDate(new Date(before));
+      query = query.where('created_at', '<', beforeDate);
+    }
+
+    query = query.limit(parseInt(limit));
+
+    const messagesSnapshot = await query.get();
+    const messages = messagesSnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    })).reverse(); // Reverse to get chronological order
+
+    // Mark messages as read
+    await markMessagesAsRead(id, req.user.id);
+
+    res.json({
+      success: true,
+      data: messages
+    });
+
+  } catch (error) {
+    console.error('Get messages error:', error);
+    res.status(500).json({ error: 'Failed to get messages' });
+  }
+});
+
+/**
+ * POST /api/chat/conversations/:id/messages
+ * Send a message
+ */
+router.post('/conversations/:id/messages', auth, userRateLimit(60, 60 * 1000), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { text, type = 'text' } = req.body;
+
+    if (!text || text.trim().length === 0) {
+      return res.status(400).json({ error: 'Message text is required' });
+    }
+
+    if (text.trim().length > 2000) {
+      return res.status(400).json({ error: 'Message too long (max 2000 characters)' });
+    }
+
+    // Check if user is participant in this conversation
+    const conversationDoc = await db.collection('conversations').doc(id).get();
+    
+    if (!conversationDoc.exists) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    const conversationData = conversationDoc.data();
+    
+    if (!conversationData.participants.includes(req.user.id)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const messageId = uuidv4();
+    
+    const messageData = {
+      id: messageId,
+      conversation_id: id,
+      sender_id: req.user.id,
+      text: text.trim(),
+      type,
+      created_at: admin.firestore.FieldValue.serverTimestamp(),
+      
+      // Read status for each participant
+      read_by: {
+        [req.user.id]: admin.firestore.FieldValue.serverTimestamp()
+      }
+    };
+
+    // Use transaction to ensure atomicity
+    await db.runTransaction(async (transaction) => {
+      // Create message
+      transaction.set(db.collection('messages').doc(messageId), messageData);
+      
+      // Update conversation with last message info
+      transaction.update(db.collection('conversations').doc(id), {
+        last_message: text.trim().substring(0, 100),
+        last_message_sender_id: req.user.id,
+        last_message_at: admin.firestore.FieldValue.serverTimestamp()
+      });
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Message sent successfully',
+      data: { id: messageId, ...messageData }
+    });
+
+  } catch (error) {
+    console.error('Send message error:', error);
     res.status(500).json({ error: 'Failed to send message' });
   }
 });
 
 /**
- * PUT /api/chat/:contractId/messages/:messageId/read
- * Mark message as read
+ * POST /api/chat/conversations/:id/mark-read
+ * Mark conversation as read
  */
-router.put('/:contractId/messages/:messageId/read', authenticateToken, async (req, res) => {
+router.post('/conversations/:id/mark-read', auth, async (req, res) => {
   try {
-    const contractId = req.params.contractId;
-    const messageId = req.params.messageId;
+    const { id } = req.params;
 
-    // Check if user has access to this contract
-    const contractDoc = await admin.firestore()
-      .collection('contracts')
-      .doc(contractId)
-      .get();
-
-    if (!contractDoc.exists) {
-      return res.status(404).json({ error: 'Contract not found' });
+    // Check if user is participant in this conversation
+    const conversationDoc = await db.collection('conversations').doc(id).get();
+    
+    if (!conversationDoc.exists) {
+      return res.status(404).json({ error: 'Conversation not found' });
     }
 
-    const contractData = contractDoc.data();
+    const conversationData = conversationDoc.data();
+    
+    if (!conversationData.participants.includes(req.user.id)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
 
-    const hasAccess = contractData.client_id === req.user.id || 
-                     contractData.freelancer_id === req.user.id ||
-                     (contractData.team_id && await isTeamMember(contractData.team_id, req.user.id));
+    await markMessagesAsRead(id, req.user.id);
 
+    res.json({
+      success: true,
+      message: 'Messages marked as read'
+    });
+
+  } catch (error) {
+    console.error('Mark read error:', error);
+    res.status(500).json({ error: 'Failed to mark messages as read' });
+  }
+});
+
+/**
+ * GET /api/chat/project/:projectId/messages
+ * Get project chat messages (for project discussions)
+ */
+router.get('/project/:projectId/messages', auth, async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const { page = 1, limit = 50 } = req.query;
+
+    // Check if user has access to this project
+    const hasAccess = await checkProjectAccess(projectId, req.user.id);
+    
     if (!hasAccess) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    // Get message
-    const messageDoc = await admin.firestore()
-      .collection('chat_messages')
-      .doc(messageId)
+    const messagesSnapshot = await db.collection('project_messages')
+      .where('project_id', '==', projectId)
+      .orderBy('created_at', 'desc')
+      .limit(parseInt(limit))
       .get();
 
+    const messages = [];
+
+    for (const doc of messagesSnapshot.docs) {
+      const messageData = doc.data();
+      
+      // Get sender info
+      const senderDoc = await db.collection('users').doc(messageData.sender_id).get();
+      const senderData = senderDoc.exists ? senderDoc.data() : null;
+
+      messages.push({
+        id: doc.id,
+        ...messageData,
+        sender: senderData ? {
+          id: senderData.id,
+          name: senderData.name,
+          university: senderData.university
+        } : null
+      });
+    }
+
+    res.json({
+      success: true,
+      data: messages.reverse() // Chronological order
+    });
+
+  } catch (error) {
+    console.error('Get project messages error:', error);
+    res.status(500).json({ error: 'Failed to get project messages' });
+  }
+});
+
+/**
+ * POST /api/chat/project/:projectId/messages
+ * Send a project message
+ */
+router.post('/project/:projectId/messages', auth, userRateLimit(30, 60 * 1000), async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const { text, type = 'text' } = req.body;
+
+    if (!text || text.trim().length === 0) {
+      return res.status(400).json({ error: 'Message text is required' });
+    }
+
+    // Check if user has access to this project
+    const hasAccess = await checkProjectAccess(projectId, req.user.id);
+    
+    if (!hasAccess) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const messageId = uuidv4();
+    
+    const messageData = {
+      id: messageId,
+      project_id: projectId,
+      sender_id: req.user.id,
+      text: text.trim(),
+      type,
+      created_at: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    await db.collection('project_messages').doc(messageId).set(messageData);
+
+    // Get sender info for response
+    const senderData = {
+      id: req.user.id,
+      name: req.user.name,
+      university: req.user.university
+    };
+
+    res.status(201).json({
+      success: true,
+      message: 'Message sent successfully',
+      data: {
+        ...messageData,
+        sender: senderData
+      }
+    });
+
+  } catch (error) {
+    console.error('Send project message error:', error);
+    res.status(500).json({ error: 'Failed to send message' });
+  }
+});
+
+/**
+ * DELETE /api/chat/messages/:id
+ * Delete a message (only by sender)
+ */
+router.delete('/messages/:id', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const messageDoc = await db.collection('messages').doc(id).get();
+    
     if (!messageDoc.exists) {
       return res.status(404).json({ error: 'Message not found' });
     }
 
     const messageData = messageDoc.data();
-
-    // Add user to read_by array if not already there
-    if (!messageData.read_by.includes(req.user.id)) {
-      await admin.firestore()
-        .collection('chat_messages')
-        .doc(messageId)
-        .update({
-          read_by: admin.firestore.FieldValue.arrayUnion(req.user.id)
-        });
+    
+    // Check if user is the sender
+    if (messageData.sender_id !== req.user.id) {
+      return res.status(403).json({ error: 'You can only delete your own messages' });
     }
 
-    res.json({ message: 'Message marked as read' });
+    // Check if message is recent (can only delete messages within 5 minutes)
+    const messageTime = messageData.created_at.toDate();
+    const now = new Date();
+    const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
 
-  } catch (error) {
-    console.error('Mark message read error:', error);
-    res.status(500).json({ error: 'Failed to mark message as read' });
-  }
-});
-
-/**
- * GET /api/chat/:contractId/unread-count
- * Get unread message count for a contract
- */
-router.get('/:contractId/unread-count', authenticateToken, async (req, res) => {
-  try {
-    const contractId = req.params.contractId;
-
-    // Check if user has access to this contract
-    const contractDoc = await admin.firestore()
-      .collection('contracts')
-      .doc(contractId)
-      .get();
-
-    if (!contractDoc.exists) {
-      return res.status(404).json({ error: 'Contract not found' });
+    if (messageTime < fiveMinutesAgo) {
+      return res.status(400).json({ error: 'Can only delete messages within 5 minutes of sending' });
     }
 
-    const contractData = contractDoc.data();
-
-    const hasAccess = contractData.client_id === req.user.id || 
-                     contractData.freelancer_id === req.user.id ||
-                     (contractData.team_id && await isTeamMember(contractData.team_id, req.user.id));
-
-    if (!hasAccess) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    // Get messages where user is not in read_by array
-    const messagesSnapshot = await admin.firestore()
-      .collection('chat_messages')
-      .where('contract_id', '==', contractId)
-      .get();
-
-    let unreadCount = 0;
-    messagesSnapshot.forEach(doc => {
-      const messageData = doc.data();
-      if (!messageData.read_by.includes(req.user.id)) {
-        unreadCount++;
-      }
+    // Soft delete - mark as deleted instead of removing
+    await db.collection('messages').doc(id).update({
+      deleted_at: admin.firestore.FieldValue.serverTimestamp(),
+      text: '[Message deleted]'
     });
 
-    res.json({ unread_count: unreadCount });
-
-  } catch (error) {
-    console.error('Unread count error:', error);
-    res.status(500).json({ error: 'Failed to get unread count' });
-  }
-});
-
-/**
- * GET /api/chat/contracts
- * Get user's chat contracts
- */
-router.get('/contracts', authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.id;
-
-    // Get contracts where user is involved
-    const contractsSnapshot = await admin.firestore()
-      .collection('contracts')
-      .where('client_id', '==', userId)
-      .get();
-
-    const freelancerContractsSnapshot = await admin.firestore()
-      .collection('contracts')
-      .where('freelancer_id', '==', userId)
-      .get();
-
-    const contracts = [];
-
-    // Process client contracts
-    for (const doc of contractsSnapshot.docs) {
-      const contractData = doc.data();
-      const contractWithDetails = await enrichContractForChat(contractData, userId);
-      contracts.push(contractWithDetails);
-    }
-
-    // Process freelancer contracts
-    for (const doc of freelancerContractsSnapshot.docs) {
-      const contractData = doc.data();
-      const contractWithDetails = await enrichContractForChat(contractData, userId);
-      contracts.push(contractWithDetails);
-    }
-
-    // Remove duplicates
-    const uniqueContracts = contracts.filter((contract, index, self) => 
-      index === self.findIndex(c => c.id === contract.id)
-    );
-
-    res.json({ contracts: uniqueContracts });
-
-  } catch (error) {
-    console.error('Chat contracts fetch error:', error);
-    res.status(500).json({ error: 'Failed to fetch chat contracts' });
-  }
-});
-
-// Helper function to enrich contract data for chat
-async function enrichContractForChat(contractData, userId) {
-  try {
-    // Get project information
-    const projectDoc = await admin.firestore()
-      .collection('projects')
-      .doc(contractData.project_id)
-      .get();
-
-    const projectData = projectDoc.exists ? projectDoc.data() : null;
-
-    // Get other party information
-    let otherParty = null;
-    if (contractData.client_id === userId) {
-      // User is client, get freelancer info
-      const freelancerDoc = await admin.firestore()
-        .collection('users')
-        .doc(contractData.freelancer_id)
-        .get();
-
-      otherParty = freelancerDoc.exists ? freelancerDoc.data() : null;
-    } else {
-      // User is freelancer, get client info
-      const clientDoc = await admin.firestore()
-        .collection('users')
-        .doc(contractData.client_id)
-        .get();
-
-      otherParty = clientDoc.exists ? clientDoc.data() : null;
-    }
-
-    // Get last message
-    const lastMessageSnapshot = await admin.firestore()
-      .collection('chat_messages')
-      .where('contract_id', '==', contractData.id)
-      .orderBy('created_at', 'desc')
-      .limit(1)
-      .get();
-
-    let lastMessage = null;
-    if (!lastMessageSnapshot.empty) {
-      const lastMessageDoc = lastMessageSnapshot.docs[0];
-      lastMessage = {
-        id: lastMessageDoc.id,
-        ...lastMessageDoc.data(),
-        created_at: lastMessageDoc.data().created_at?.toDate()
-      };
-    }
-
-    // Get unread count
-    const messagesSnapshot = await admin.firestore()
-      .collection('chat_messages')
-      .where('contract_id', '==', contractData.id)
-      .get();
-
-    let unreadCount = 0;
-    messagesSnapshot.forEach(doc => {
-      const messageData = doc.data();
-      if (!messageData.read_by.includes(userId)) {
-        unreadCount++;
-      }
+    res.json({
+      success: true,
+      message: 'Message deleted successfully'
     });
 
-    return {
-      id: contractData.id,
-      status: contractData.status,
-      created_at: contractData.created_at?.toDate(),
-      project: projectData ? {
-        id: projectData.id,
-        title: projectData.title
-      } : null,
-      other_party: otherParty ? {
-        id: otherParty.id,
-        name: otherParty.name,
-        role: otherParty.role
-      } : null,
-      last_message: lastMessage,
-      unread_count: unreadCount
-    };
-
   } catch (error) {
-    console.error('Contract enrichment error:', error);
-    return contractData;
+    console.error('Delete message error:', error);
+    res.status(500).json({ error: 'Failed to delete message' });
+  }
+});
+
+// Helper function to get unread message count
+async function getUnreadCount(conversationId, userId) {
+  try {
+    const messagesSnapshot = await db.collection('messages')
+      .where('conversation_id', '==', conversationId)
+      .where(`read_by.${userId}`, '==', null)
+      .get();
+    
+    return messagesSnapshot.size;
+  } catch (error) {
+    return 0;
   }
 }
 
-// Helper function to check if user is team member
-async function isTeamMember(teamId, userId) {
-  const teamDoc = await admin.firestore()
-    .collection('teams')
-    .doc(teamId)
-    .get();
+// Helper function to mark messages as read
+async function markMessagesAsRead(conversationId, userId) {
+  try {
+    const unreadMessagesSnapshot = await db.collection('messages')
+      .where('conversation_id', '==', conversationId)
+      .where(`read_by.${userId}`, '==', null)
+      .get();
 
-  if (!teamDoc.exists) return false;
+    if (!unreadMessagesSnapshot.empty) {
+      const batch = db.batch();
+      
+      unreadMessagesSnapshot.docs.forEach(doc => {
+        batch.update(doc.ref, {
+          [`read_by.${userId}`]: admin.firestore.FieldValue.serverTimestamp()
+        });
+      });
+      
+      await batch.commit();
+    }
+  } catch (error) {
+    console.error('Mark messages as read error:', error);
+  }
+}
 
-  const teamData = teamDoc.data();
-  return teamData.member_ids && teamData.member_ids.includes(userId);
+// Helper function to check project access
+async function checkProjectAccess(projectId, userId) {
+  try {
+    const projectDoc = await db.collection('projects').doc(projectId).get();
+    
+    if (!projectDoc.exists) return false;
+    
+    const projectData = projectDoc.data();
+    
+    // User has access if they're the client or freelancer
+    return projectData.client_id === userId || projectData.freelancer_id === userId;
+  } catch (error) {
+    return false;
+  }
 }
 
 module.exports = router;

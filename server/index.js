@@ -20,6 +20,7 @@ const transactionRoutes = require('./routes/transactions');
 const reviewRoutes = require('./routes/reviews');
 const adminRoutes = require('./routes/admin');
 const chatRoutes = require('./routes/chat');
+const leaderboardRoutes = require('./routes/leaderboard');
 const notificationRoutes = require('./routes/notifications');
 
 const app = express();
@@ -65,6 +66,7 @@ app.use('/api/transactions', transactionRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/leaderboard', leaderboardRoutes);
 app.use('/api/notifications', notificationRoutes);
 
 // Error handling middleware

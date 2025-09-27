@@ -29,7 +29,12 @@ const requiredClientEnvVars = [
 
 const missingClientVars = requiredClientEnvVars.filter(varName => !process.env[varName]);
 if (missingClientVars.length > 0) {
-  throw new Error(`Missing required Firebase client environment variables: ${missingClientVars.join(', ')}`);
+  console.warn(`Missing Firebase environment variables: ${missingClientVars.join(', ')}`);
+  console.warn('Firebase features may not work properly.');
+  // Don't throw error in development to allow app to load
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(`Missing required Firebase client environment variables: ${missingClientVars.join(', ')}`);
+  }
 }
 
 // Initialize Firebase

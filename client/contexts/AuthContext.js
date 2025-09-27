@@ -3,8 +3,10 @@
 
 import { createContext, useContext, useReducer, useEffect } from 'react';
 import { useRouter } from 'next/router';
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
 import toast from 'react-hot-toast';
 
+import { auth as firebaseAuth } from '../lib/firebase';
 import { authAPI, handleAPIError } from '../lib/api';
 import { getStoredAuth, storeAuth, clearAuth, getDefaultRedirect } from '../lib/auth';
 
@@ -125,27 +127,60 @@ export const AuthProvider = ({ children }) => {
     try {
       dispatch({ type: AUTH_ACTIONS.LOGIN_START });
 
-      const response = await authAPI.login(email, password);
-      const { user, token } = response.data;
+      // First, authenticate with Firebase Auth
+      const userCredential = await signInWithEmailAndPassword(firebaseAuth, email, password);
+      const firebaseUser = userCredential.user;
+      
+      // Get the ID token
+      const idToken = await firebaseUser.getIdToken();
 
-      // Store auth data
-      storeAuth({ user, token });
+      // Send the token to our backend for verification and user data
+      const response = await authAPI.login(idToken);
+      const { user } = response.data;
+
+      // Store auth data with Firebase token
+      storeAuth({ user, token: idToken });
 
       dispatch({
         type: AUTH_ACTIONS.LOGIN_SUCCESS,
-        payload: { user, token },
+        payload: { user, token: idToken },
       });
 
       toast.success('Login successful!');
       return { success: true, user };
     } catch (error) {
-      const errorData = handleAPIError(error);
+      let errorMessage = 'Login failed';
+      
+      if (error.code) {
+        // Firebase Auth error
+        switch (error.code) {
+          case 'auth/user-not-found':
+            errorMessage = 'No account found with this email';
+            break;
+          case 'auth/wrong-password':
+            errorMessage = 'Incorrect password';
+            break;
+          case 'auth/invalid-email':
+            errorMessage = 'Invalid email address';
+            break;
+          case 'auth/user-disabled':
+            errorMessage = 'This account has been disabled';
+            break;
+          default:
+            errorMessage = error.message;
+        }
+      } else {
+        // API error
+        const errorData = handleAPIError(error);
+        errorMessage = errorData.message;
+      }
+
       dispatch({
         type: AUTH_ACTIONS.LOGIN_FAILURE,
-        payload: errorData.message,
+        payload: errorMessage,
       });
-      toast.error(errorData.message);
-      return { success: false, error: errorData.message };
+      toast.error(errorMessage);
+      return { success: false, error: errorMessage };
     }
   };
 
@@ -154,34 +189,82 @@ export const AuthProvider = ({ children }) => {
     try {
       dispatch({ type: AUTH_ACTIONS.LOGIN_START });
 
-      const response = await authAPI.register(userData);
-      const { user, token } = response.data;
+      // First, create user with Firebase Auth
+      const userCredential = await createUserWithEmailAndPassword(
+        firebaseAuth, 
+        userData.email, 
+        userData.password
+      );
+      const firebaseUser = userCredential.user;
+      
+      // Get the ID token
+      const idToken = await firebaseUser.getIdToken();
+
+      // Send user data to our backend with the Firebase UID
+      const registrationData = {
+        ...userData,
+        uid: firebaseUser.uid,
+        idToken
+      };
+
+      const response = await authAPI.register(registrationData);
+      const { user } = response.data;
 
       // Store auth data
-      storeAuth({ user, token });
+      storeAuth({ user, token: idToken });
 
       dispatch({
         type: AUTH_ACTIONS.LOGIN_SUCCESS,
-        payload: { user, token },
+        payload: { user, token: idToken },
       });
 
       toast.success('Registration successful!');
       return { success: true, user };
     } catch (error) {
-      const errorData = handleAPIError(error);
+      let errorMessage = 'Registration failed';
+      
+      if (error.code) {
+        // Firebase Auth error
+        switch (error.code) {
+          case 'auth/email-already-in-use':
+            errorMessage = 'An account with this email already exists';
+            break;
+          case 'auth/invalid-email':
+            errorMessage = 'Invalid email address';
+            break;
+          case 'auth/weak-password':
+            errorMessage = 'Password is too weak';
+            break;
+          default:
+            errorMessage = error.message;
+        }
+      } else {
+        // API error
+        const errorData = handleAPIError(error);
+        errorMessage = errorData.message;
+      }
+
       dispatch({
         type: AUTH_ACTIONS.LOGIN_FAILURE,
-        payload: errorData.message,
+        payload: errorMessage,
       });
-      toast.error(errorData.message);
-      return { success: false, error: errorData.message };
+      toast.error(errorMessage);
+      return { success: false, error: errorMessage };
     }
   };
 
   // Logout function
   const logout = async () => {
     try {
-      await authAPI.logout();
+      // Sign out from Firebase Auth
+      await signOut(firebaseAuth);
+      // Optionally call backend logout (if needed for cleanup)
+      try {
+        await authAPI.logout();
+      } catch (error) {
+        // Backend logout error is not critical
+        console.warn('Backend logout error:', error);
+      }
     } catch (error) {
       console.error('Logout error:', error);
     } finally {

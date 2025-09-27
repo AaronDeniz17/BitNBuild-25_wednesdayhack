@@ -1,42 +1,44 @@
-// Individual Project Details Page for GigCampus
+// Project Detail Page with Bid Modal for GigCampus
 // Shows project details and allows students to submit bids
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
-import Link from 'next/link';
-import { 
+import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { toast } from 'react-hot-toast';
+import { Dialog, Transition } from '@headlessui/react';
+import { Fragment } from 'react';
+import {
+  CalendarIcon,
   CurrencyDollarIcon,
   ClockIcon,
   UserGroupIcon,
+  TagIcon,
+  XMarkIcon,
+  PaperAirplaneIcon,
   StarIcon,
-  CalendarIcon,
   BriefcaseIcon,
-  ChevronLeftIcon
+  ExclamationTriangleIcon
 } from '@heroicons/react/24/outline';
 
 import Layout from '../../components/Layout/Layout';
 import { useAuth } from '../../contexts/AuthContext';
 import { projectsAPI, bidsAPI } from '../../lib/api';
-import { formatCurrency, formatDate, getRelativeTime } from '../../lib/auth';
-import toast from 'react-hot-toast';
+import { formatCurrency, formatDate, getRelativeTime } from '../../lib/utils';
 
 const ProjectDetailPage = () => {
-  const { user } = useAuth();
   const router = useRouter();
   const { id } = router.query;
-  const [project, setProject] = useState(null);
-  const [client, setClient] = useState(null);
-  const [bids, setBids] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [showBidModal, setShowBidModal] = useState(false);
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+  
+  const [isBidModalOpen, setIsBidModalOpen] = useState(false);
   const [bidData, setBidData] = useState({
     price: '',
-    proposal: '',
     eta_days: '',
-    portfolio_links: [],
+    proposal: '',
+    portfolio_links: [''],
     message: ''
   });
-  const [submittingBid, setSubmittingBid] = useState(false);
 
   useEffect(() => {
     if (id) {

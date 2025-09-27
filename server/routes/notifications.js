@@ -1,55 +1,77 @@
-// Notification routes for GigCampus
+// Notifications routes for GigCampus
 // Handles user notifications and real-time updates
 
 const express = require('express');
-const { admin } = require('../config/firebase');
-const { authenticateToken } = require('../middleware/auth');
-const { 
-  getUserNotifications, 
-  markAsRead, 
-  getUnreadCount,
-  NOTIFICATION_TYPES 
-} = require('../utils/notifications');
+const { v4: uuidv4 } = require('uuid');
+const { admin, db } = require('../config/firebase');
+const { auth } = require('../middleware/auth');
 
 const router = express.Router();
 
+// Notification type constants
+const NOTIFICATION_TYPES = {
+  PROJECT_BID: 'project_bid',
+  BID_ACCEPTED: 'bid_accepted',
+  BID_REJECTED: 'bid_rejected',
+  CONTRACT_CREATED: 'contract_created',
+  MILESTONE_STARTED: 'milestone_started',
+  MILESTONE_SUBMITTED: 'milestone_submitted',
+  MILESTONE_APPROVED: 'milestone_approved',
+  MILESTONE_REJECTED: 'milestone_rejected',
+  PROJECT_COMPLETED: 'project_completed',
+  PAYMENT_RECEIVED: 'payment_received',
+  REVIEW_RECEIVED: 'review_received',
+  TEAM_INVITATION: 'team_invitation',
+  TEAM_MEMBER_JOINED: 'team_member_joined',
+  MESSAGE_RECEIVED: 'message_received',
+  SYSTEM_ANNOUNCEMENT: 'system_announcement'
+};
+
 /**
  * GET /api/notifications
- * Get user notifications with pagination
+ * Get user's notifications
  */
-router.get('/', authenticateToken, async (req, res) => {
+router.get('/', auth, async (req, res) => {
   try {
-    const { limit = 20, offset = 0, unread_only = 'false' } = req.query;
-    const userId = req.user.id;
+    const { type, read, page = 1, limit = 50 } = req.query;
 
-    let query = admin.firestore()
-      .collection('notifications')
-      .where('user_id', '==', userId);
+    let query = db.collection('notifications')
+      .where('user_id', '==', req.user.id);
 
-    if (unread_only === 'true') {
-      query = query.where('is_read', '==', false);
+    if (type && Object.values(NOTIFICATION_TYPES).includes(type)) {
+      query = query.where('type', '==', type);
     }
 
-    query = query.orderBy('created_at', 'desc')
-      .limit(parseInt(limit))
-      .offset(parseInt(offset));
+    if (read !== undefined) {
+      query = query.where('read', '==', read === 'true');
+    }
+
+    query = query.orderBy('created_at', 'desc');
+
+    const pageSize = Math.min(parseInt(limit), 100);
+    const offset = (parseInt(page) - 1) * pageSize;
+    
+    query = query.limit(pageSize).offset(offset);
 
     const snapshot = await query.get();
-    const notifications = [];
+    const notifications = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
 
-    snapshot.forEach(doc => {
-      notifications.push({
-        id: doc.id,
-        ...doc.data(),
-        created_at: doc.data().created_at?.toDate()
-      });
+    res.json({
+      success: true,
+      data: notifications,
+      pagination: {
+        page: parseInt(page),
+        limit: pageSize,
+        total: snapshot.size
+      }
     });
-
-    res.json({ notifications });
 
   } catch (error) {
     console.error('Get notifications error:', error);
-    res.status(500).json({ error: 'Failed to fetch notifications' });
+    res.status(500).json({ error: 'Failed to get notifications' });
   }
 });
 
@@ -57,12 +79,17 @@ router.get('/', authenticateToken, async (req, res) => {
  * GET /api/notifications/unread-count
  * Get count of unread notifications
  */
-router.get('/unread-count', authenticateToken, async (req, res) => {
+router.get('/unread-count', auth, async (req, res) => {
   try {
-    const userId = req.user.id;
-    const count = await getUnreadCount(userId);
-    
-    res.json({ unread_count: count });
+    const snapshot = await db.collection('notifications')
+      .where('user_id', '==', req.user.id)
+      .where('read', '==', false)
+      .get();
+
+    res.json({
+      success: true,
+      data: { count: snapshot.size }
+    });
 
   } catch (error) {
     console.error('Get unread count error:', error);
@@ -74,71 +101,72 @@ router.get('/unread-count', authenticateToken, async (req, res) => {
  * PUT /api/notifications/:id/read
  * Mark notification as read
  */
-router.put('/:id/read', authenticateToken, async (req, res) => {
+router.put('/:id/read', auth, async (req, res) => {
   try {
-    const notificationId = req.params.id;
-    const userId = req.user.id;
-
-    // Verify notification belongs to user
-    const notificationDoc = await admin.firestore()
-      .collection('notifications')
-      .doc(notificationId)
-      .get();
-
+    const { id } = req.params;
+    
+    const notificationDoc = await db.collection('notifications').doc(id).get();
+    
     if (!notificationDoc.exists) {
       return res.status(404).json({ error: 'Notification not found' });
     }
 
-    const notification = notificationDoc.data();
-    if (notification.user_id !== userId) {
+    const notificationData = notificationDoc.data();
+    
+    // Check if user owns the notification
+    if (notificationData.user_id !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    await markAsRead(notificationId);
+    await db.collection('notifications').doc(id).update({
+      read: true,
+      read_at: admin.firestore.FieldValue.serverTimestamp(),
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    });
 
-    res.json({ message: 'Notification marked as read' });
+    res.json({
+      success: true,
+      message: 'Notification marked as read'
+    });
 
   } catch (error) {
-    console.error('Mark as read error:', error);
-    res.status(500).json({ error: 'Failed to mark as read' });
+    console.error('Mark notification read error:', error);
+    res.status(500).json({ error: 'Failed to mark notification as read' });
   }
 });
 
 /**
  * PUT /api/notifications/mark-all-read
- * Mark all notifications as read for user
+ * Mark all notifications as read
  */
-router.put('/mark-all-read', authenticateToken, async (req, res) => {
+router.put('/mark-all-read', auth, async (req, res) => {
   try {
-    const userId = req.user.id;
-
-    // Get all unread notifications for user
-    const snapshot = await admin.firestore()
-      .collection('notifications')
-      .where('user_id', '==', userId)
-      .where('is_read', '==', false)
+    const unreadSnapshot = await db.collection('notifications')
+      .where('user_id', '==', req.user.id)
+      .where('read', '==', false)
       .get();
 
-    // Batch update
-    const batch = admin.firestore().batch();
-    
-    snapshot.forEach(doc => {
+    const batch = db.batch();
+    const timestamp = admin.firestore.FieldValue.serverTimestamp();
+
+    unreadSnapshot.docs.forEach(doc => {
       batch.update(doc.ref, {
-        is_read: true,
-        read_at: admin.firestore.FieldValue.serverTimestamp()
+        read: true,
+        read_at: timestamp,
+        updated_at: timestamp
       });
     });
 
     await batch.commit();
 
-    res.json({ 
-      message: 'All notifications marked as read',
-      updated_count: snapshot.size
+    res.json({
+      success: true,
+      message: `${unreadSnapshot.size} notifications marked as read`
     });
 
   } catch (error) {
-    console.error('Mark all as read error:', error);
-    res.status(500).json({ error: 'Failed to mark all as read' });
+    console.error('Mark all read error:', error);
+    res.status(500).json({ error: 'Failed to mark all notifications as read' });
   }
 });
 
@@ -146,32 +174,29 @@ router.put('/mark-all-read', authenticateToken, async (req, res) => {
  * DELETE /api/notifications/:id
  * Delete a notification
  */
-router.delete('/:id', authenticateToken, async (req, res) => {
+router.delete('/:id', auth, async (req, res) => {
   try {
-    const notificationId = req.params.id;
-    const userId = req.user.id;
-
-    // Verify notification belongs to user
-    const notificationDoc = await admin.firestore()
-      .collection('notifications')
-      .doc(notificationId)
-      .get();
-
+    const { id } = req.params;
+    
+    const notificationDoc = await db.collection('notifications').doc(id).get();
+    
     if (!notificationDoc.exists) {
       return res.status(404).json({ error: 'Notification not found' });
     }
 
-    const notification = notificationDoc.data();
-    if (notification.user_id !== userId) {
+    const notificationData = notificationDoc.data();
+    
+    // Check if user owns the notification
+    if (notificationData.user_id !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    await admin.firestore()
-      .collection('notifications')
-      .doc(notificationId)
-      .delete();
+    await db.collection('notifications').doc(id).delete();
 
-    res.json({ message: 'Notification deleted' });
+    res.json({
+      success: true,
+      message: 'Notification deleted'
+    });
 
   } catch (error) {
     console.error('Delete notification error:', error);
@@ -180,38 +205,242 @@ router.delete('/:id', authenticateToken, async (req, res) => {
 });
 
 /**
- * GET /api/notifications/types
- * Get available notification types
+ * DELETE /api/notifications/clear-all
+ * Clear all notifications for user
  */
-router.get('/types', authenticateToken, async (req, res) => {
+router.delete('/clear-all', auth, async (req, res) => {
   try {
-    res.json({ 
-      notification_types: Object.values(NOTIFICATION_TYPES),
-      descriptions: {
-        [NOTIFICATION_TYPES.BID_RECEIVED]: 'New bid received on your project',
-        [NOTIFICATION_TYPES.BID_ACCEPTED]: 'Your bid was accepted',
-        [NOTIFICATION_TYPES.BID_REJECTED]: 'Your bid was rejected',
-        [NOTIFICATION_TYPES.MILESTONE_SUBMITTED]: 'Milestone submitted for review',
-        [NOTIFICATION_TYPES.MILESTONE_APPROVED]: 'Milestone approved',
-        [NOTIFICATION_TYPES.MILESTONE_REJECTED]: 'Milestone rejected',
-        [NOTIFICATION_TYPES.PAYMENT_RECEIVED]: 'Payment received',
-        [NOTIFICATION_TYPES.PAYMENT_RELEASED]: 'Payment released',
-        [NOTIFICATION_TYPES.PROJECT_COMPLETED]: 'Project completed',
-        [NOTIFICATION_TYPES.NEW_MESSAGE]: 'New message received',
-        [NOTIFICATION_TYPES.TEAM_INVITE]: 'Team invitation received',
-        [NOTIFICATION_TYPES.TEAM_JOINED]: 'Someone joined your team',
-        [NOTIFICATION_TYPES.REVIEW_RECEIVED]: 'New review received',
-        [NOTIFICATION_TYPES.DISPUTE_CREATED]: 'Dispute created',
-        [NOTIFICATION_TYPES.DISPUTE_RESOLVED]: 'Dispute resolved',
-        [NOTIFICATION_TYPES.PROJECT_DEADLINE_REMINDER]: 'Project deadline approaching',
-        [NOTIFICATION_TYPES.SKILL_MATCH_FOUND]: 'New project matches your skills'
-      }
+    const { older_than_days } = req.query;
+    
+    let query = db.collection('notifications')
+      .where('user_id', '==', req.user.id);
+
+    // If specified, only delete notifications older than X days
+    if (older_than_days) {
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - parseInt(older_than_days));
+      query = query.where('created_at', '<', admin.firestore.Timestamp.fromDate(cutoffDate));
+    }
+
+    const snapshot = await query.get();
+    const batch = db.batch();
+
+    snapshot.docs.forEach(doc => {
+      batch.delete(doc.ref);
+    });
+
+    await batch.commit();
+
+    res.json({
+      success: true,
+      message: `${snapshot.size} notifications cleared`
     });
 
   } catch (error) {
-    console.error('Get notification types error:', error);
-    res.status(500).json({ error: 'Failed to get notification types' });
+    console.error('Clear notifications error:', error);
+    res.status(500).json({ error: 'Failed to clear notifications' });
   }
 });
 
+/**
+ * GET /api/notifications/settings
+ * Get notification preferences
+ */
+router.get('/settings', auth, async (req, res) => {
+  try {
+    const userDoc = await db.collection('users').doc(req.user.id).get();
+    const userData = userDoc.data();
+    
+    const defaultSettings = {
+      email_notifications: true,
+      push_notifications: true,
+      project_updates: true,
+      bid_updates: true,
+      milestone_updates: true,
+      payment_updates: true,
+      team_updates: true,
+      message_notifications: true,
+      marketing_emails: false
+    };
+
+    const settings = {
+      ...defaultSettings,
+      ...userData.notification_settings
+    };
+
+    res.json({
+      success: true,
+      data: settings
+    });
+
+  } catch (error) {
+    console.error('Get notification settings error:', error);
+    res.status(500).json({ error: 'Failed to get notification settings' });
+  }
+});
+
+/**
+ * PUT /api/notifications/settings
+ * Update notification preferences
+ */
+router.put('/settings', auth, async (req, res) => {
+  try {
+    const {
+      email_notifications,
+      push_notifications,
+      project_updates,
+      bid_updates,
+      milestone_updates,
+      payment_updates,
+      team_updates,
+      message_notifications,
+      marketing_emails
+    } = req.body;
+
+    const settings = {};
+    
+    if (email_notifications !== undefined) settings.email_notifications = Boolean(email_notifications);
+    if (push_notifications !== undefined) settings.push_notifications = Boolean(push_notifications);
+    if (project_updates !== undefined) settings.project_updates = Boolean(project_updates);
+    if (bid_updates !== undefined) settings.bid_updates = Boolean(bid_updates);
+    if (milestone_updates !== undefined) settings.milestone_updates = Boolean(milestone_updates);
+    if (payment_updates !== undefined) settings.payment_updates = Boolean(payment_updates);
+    if (team_updates !== undefined) settings.team_updates = Boolean(team_updates);
+    if (message_notifications !== undefined) settings.message_notifications = Boolean(message_notifications);
+    if (marketing_emails !== undefined) settings.marketing_emails = Boolean(marketing_emails);
+
+    await db.collection('users').doc(req.user.id).update({
+      notification_settings: settings,
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({
+      success: true,
+      message: 'Notification settings updated',
+      data: settings
+    });
+
+  } catch (error) {
+    console.error('Update notification settings error:', error);
+    res.status(500).json({ error: 'Failed to update notification settings' });
+  }
+});
+
+// Helper function to create notifications (used by other routes)
+const createNotification = async (userId, type, title, message, data = {}) => {
+  try {
+    const notificationId = uuidv4();
+    
+    const notificationData = {
+      id: notificationId,
+      user_id: userId,
+      type,
+      title,
+      message,
+      data,
+      read: false,
+      created_at: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    await db.collection('notifications').doc(notificationId).set(notificationData);
+    
+    return notificationId;
+  } catch (error) {
+    console.error('Create notification error:', error);
+    throw error;
+  }
+};
+
+// Helper function to send notifications to multiple users
+const createBulkNotifications = async (userIds, type, title, message, data = {}) => {
+  try {
+    const batch = db.batch();
+    const notificationIds = [];
+
+    userIds.forEach(userId => {
+      const notificationId = uuidv4();
+      notificationIds.push(notificationId);
+      
+      const notificationData = {
+        id: notificationId,
+        user_id: userId,
+        type,
+        title,
+        message,
+        data,
+        read: false,
+        created_at: admin.firestore.FieldValue.serverTimestamp()
+      };
+
+      batch.set(db.collection('notifications').doc(notificationId), notificationData);
+    });
+
+    await batch.commit();
+    return notificationIds;
+  } catch (error) {
+    console.error('Create bulk notifications error:', error);
+    throw error;
+  }
+};
+
+// Notification templates
+const getNotificationTemplate = (type, data) => {
+  const templates = {
+    [NOTIFICATION_TYPES.PROJECT_BID]: {
+      title: 'New Bid Received',
+      message: `${data.bidder_name} placed a bid of $${data.amount} on your project "${data.project_title}"`
+    },
+    [NOTIFICATION_TYPES.BID_ACCEPTED]: {
+      title: 'Bid Accepted!',
+      message: `Your bid for "${data.project_title}" has been accepted. Time to get started!`
+    },
+    [NOTIFICATION_TYPES.BID_REJECTED]: {
+      title: 'Bid Update',
+      message: `Your bid for "${data.project_title}" was not selected this time.`
+    },
+    [NOTIFICATION_TYPES.CONTRACT_CREATED]: {
+      title: 'New Contract Created',
+      message: `A contract has been created for project "${data.project_title}"`
+    },
+    [NOTIFICATION_TYPES.MILESTONE_SUBMITTED]: {
+      title: 'Milestone Submitted',
+      message: `"${data.milestone_title}" has been submitted for review`
+    },
+    [NOTIFICATION_TYPES.MILESTONE_APPROVED]: {
+      title: 'Milestone Approved!',
+      message: `"${data.milestone_title}" has been approved. Payment is on the way!`
+    },
+    [NOTIFICATION_TYPES.MILESTONE_REJECTED]: {
+      title: 'Milestone Needs Work',
+      message: `"${data.milestone_title}" needs revisions. Check the feedback.`
+    },
+    [NOTIFICATION_TYPES.PAYMENT_RECEIVED]: {
+      title: 'Payment Received',
+      message: `You've received $${data.amount} payment for "${data.project_title}"`
+    },
+    [NOTIFICATION_TYPES.REVIEW_RECEIVED]: {
+      title: 'New Review',
+      message: `You received a ${data.rating}-star review from ${data.reviewer_name}`
+    },
+    [NOTIFICATION_TYPES.TEAM_INVITATION]: {
+      title: 'Team Invitation',
+      message: `${data.inviter_name} invited you to join team "${data.team_name}"`
+    },
+    [NOTIFICATION_TYPES.MESSAGE_RECEIVED]: {
+      title: 'New Message',
+      message: `${data.sender_name}: ${data.message_preview}`
+    }
+  };
+
+  return templates[type] || {
+    title: 'Notification',
+    message: 'You have a new notification'
+  };
+};
+
+// Export the router as default and utility functions as named exports
 module.exports = router;
+module.exports.createNotification = createNotification;
+module.exports.createBulkNotifications = createBulkNotifications;
+module.exports.getNotificationTemplate = getNotificationTemplate;
+module.exports.NOTIFICATION_TYPES = NOTIFICATION_TYPES;

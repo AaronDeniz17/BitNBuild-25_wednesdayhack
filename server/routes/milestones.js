@@ -1,404 +1,558 @@
-// Milestone routes for GigCampus
-// Handles milestone creation, updates, and submissions
+// Milestones routes for GigCampus
+// Handles milestone management, submissions, and approvals
 
 const express = require('express');
-const { admin } = require('../config/firebase');
-const { authenticateToken, requireRole } = require('../middleware/auth');
+const { v4: uuidv4 } = require('uuid');
+const { admin, db } = require('../config/firebase');
+const { auth, userRateLimit } = require('../middleware/auth');
 
 const router = express.Router();
 
+// Milestone status constants
+const MILESTONE_STATUS = {
+  PENDING: 'pending',
+  IN_PROGRESS: 'in_progress',
+  SUBMITTED: 'submitted',
+  APPROVED: 'approved',
+  REJECTED: 'rejected',
+  COMPLETED: 'completed',
+  CANCELLED: 'cancelled'
+};
+
 /**
- * POST /api/milestones
- * Create a new milestone (clients only)
+ * GET /api/milestones
+ * Get milestones for user's contracts
  */
-router.post('/', authenticateToken, requireRole(['client']), async (req, res) => {
+router.get('/', auth, async (req, res) => {
   try {
-    const {
-      contract_id,
-      title,
-      description,
-      weight_pct,
-      due_date
-    } = req.body;
+    const { contract_id, status, page = 1, limit = 20 } = req.query;
 
-    // Validate required fields
-    if (!contract_id || !title || !weight_pct || !due_date) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    let query = db.collection('milestones');
+
+    if (contract_id) {
+      query = query.where('contract_id', '==', contract_id);
+    } else {
+      // Get milestones for user's contracts
+      const userContractsSnapshot = await db.collection('contracts')
+        .where('participants', 'array-contains', req.user.id)
+        .get();
+
+      const contractIds = userContractsSnapshot.docs.map(doc => doc.id);
+      
+      if (contractIds.length === 0) {
+        return res.json({
+          success: true,
+          data: []
+        });
+      }
+
+      query = query.where('contract_id', 'in', contractIds);
     }
 
-    // Validate weight percentage
-    if (weight_pct <= 0 || weight_pct > 100) {
-      return res.status(400).json({ error: 'Weight percentage must be between 0 and 100' });
+    if (status && status !== 'all') {
+      query = query.where('status', '==', status);
     }
 
-    // Check if contract exists and belongs to user
-    const contractDoc = await admin.firestore()
-      .collection('contracts')
-      .doc(contract_id)
-      .get();
+    query = query.orderBy('deadline', 'asc');
 
-    if (!contractDoc.exists) {
-      return res.status(404).json({ error: 'Contract not found' });
+    const pageSize = Math.min(parseInt(limit), 50);
+    const offset = (parseInt(page) - 1) * pageSize;
+    
+    query = query.limit(pageSize).offset(offset);
+
+    const snapshot = await query.get();
+    const milestones = [];
+
+    for (const doc of snapshot.docs) {
+      const milestoneData = doc.data();
+      
+      // Get contract info to determine user role
+      const contractDoc = await db.collection('contracts').doc(milestoneData.contract_id).get();
+      const contractData = contractDoc.exists ? contractDoc.data() : null;
+
+      // Get project info
+      const projectDoc = await db.collection('projects').doc(milestoneData.project_id).get();
+      const projectData = projectDoc.exists ? projectDoc.data() : null;
+
+      milestones.push({
+        id: doc.id,
+        ...milestoneData,
+        contract: contractData ? {
+          id: milestoneData.contract_id,
+          status: contractData.status
+        } : null,
+        project: projectData ? {
+          id: milestoneData.project_id,
+          title: projectData.title
+        } : null,
+        user_role: contractData ? 
+          (contractData.client_id === req.user.id ? 'client' : 'freelancer') : 
+          null
+      });
     }
 
-    const contractData = contractDoc.data();
-
-    if (contractData.client_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    // Check if contract is active
-    if (contractData.status !== 'active') {
-      return res.status(400).json({ error: 'Contract is not active' });
-    }
-
-    // Create milestone
-    const milestoneData = {
-      id: admin.firestore().collection('milestones').doc().id,
-      contract_id,
-      title,
-      description,
-      weight_pct: parseFloat(weight_pct),
-      due_date: admin.firestore.Timestamp.fromDate(new Date(due_date)),
-      status: 'pending',
-      submitted_files: [],
-      amount: (contractData.total_amount * weight_pct) / 100
-    };
-
-    await admin.firestore()
-      .collection('milestones')
-      .doc(milestoneData.id)
-      .set(milestoneData);
-
-    res.status(201).json({
-      message: 'Milestone created successfully',
-      milestone: milestoneData
+    res.json({
+      success: true,
+      data: milestones
     });
 
   } catch (error) {
-    console.error('Milestone creation error:', error);
-    res.status(500).json({ error: 'Failed to create milestone' });
-  }
-});
-
-/**
- * PUT /api/milestones/:id/submit
- * Submit milestone for approval (freelancers only)
- */
-router.put('/:id/submit', authenticateToken, requireRole(['student']), async (req, res) => {
-  try {
-    const milestoneId = req.params.id;
-    const { submitted_files, notes } = req.body;
-
-    // Get milestone
-    const milestoneDoc = await admin.firestore()
-      .collection('milestones')
-      .doc(milestoneId)
-      .get();
-
-    if (!milestoneDoc.exists) {
-      return res.status(404).json({ error: 'Milestone not found' });
-    }
-
-    const milestoneData = milestoneDoc.data();
-
-    // Check if user has access to this milestone
-    const contractDoc = await admin.firestore()
-      .collection('contracts')
-      .doc(milestoneData.contract_id)
-      .get();
-
-    if (!contractDoc.exists) {
-      return res.status(404).json({ error: 'Contract not found' });
-    }
-
-    const contractData = contractDoc.data();
-
-    const hasAccess = contractData.freelancer_id === req.user.id ||
-                     (contractData.team_id && await isTeamMember(contractData.team_id, req.user.id));
-
-    if (!hasAccess) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    // Check if milestone can be submitted
-    if (milestoneData.status !== 'pending' && milestoneData.status !== 'in_progress') {
-      return res.status(400).json({ error: 'Milestone cannot be submitted' });
-    }
-
-    // Update milestone
-    await admin.firestore()
-      .collection('milestones')
-      .doc(milestoneId)
-      .update({
-        status: 'submitted',
-        submitted_files: submitted_files || [],
-        submitted_at: admin.firestore.FieldValue.serverTimestamp(),
-        notes: notes || ''
-      });
-
-    res.json({ message: 'Milestone submitted successfully' });
-
-  } catch (error) {
-    console.error('Milestone submission error:', error);
-    res.status(500).json({ error: 'Failed to submit milestone' });
-  }
-});
-
-/**
- * PUT /api/milestones/:id/approve
- * Approve milestone (clients only)
- */
-router.put('/:id/approve', authenticateToken, requireRole(['client']), async (req, res) => {
-  try {
-    const milestoneId = req.params.id;
-    const { feedback } = req.body;
-
-    // Get milestone
-    const milestoneDoc = await admin.firestore()
-      .collection('milestones')
-      .doc(milestoneId)
-      .get();
-
-    if (!milestoneDoc.exists) {
-      return res.status(404).json({ error: 'Milestone not found' });
-    }
-
-    const milestoneData = milestoneDoc.data();
-
-    // Check if user owns the contract
-    const contractDoc = await admin.firestore()
-      .collection('contracts')
-      .doc(milestoneData.contract_id)
-      .get();
-
-    if (!contractDoc.exists) {
-      return res.status(404).json({ error: 'Contract not found' });
-    }
-
-    const contractData = contractDoc.data();
-
-    if (contractData.client_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    // Check if milestone can be approved
-    if (milestoneData.status !== 'submitted') {
-      return res.status(400).json({ error: 'Milestone is not submitted' });
-    }
-
-    // Update milestone
-    await admin.firestore()
-      .collection('milestones')
-      .doc(milestoneId)
-      .update({
-        status: 'approved',
-        approved_at: admin.firestore.FieldValue.serverTimestamp(),
-        feedback: feedback || ''
-      });
-
-    res.json({ message: 'Milestone approved successfully' });
-
-  } catch (error) {
-    console.error('Milestone approval error:', error);
-    res.status(500).json({ error: 'Failed to approve milestone' });
-  }
-});
-
-/**
- * PUT /api/milestones/:id/reject
- * Reject milestone (clients only)
- */
-router.put('/:id/reject', authenticateToken, requireRole(['client']), async (req, res) => {
-  try {
-    const milestoneId = req.params.id;
-    const { feedback, reason } = req.body;
-
-    if (!feedback) {
-      return res.status(400).json({ error: 'Feedback is required for rejection' });
-    }
-
-    // Get milestone
-    const milestoneDoc = await admin.firestore()
-      .collection('milestones')
-      .doc(milestoneId)
-      .get();
-
-    if (!milestoneDoc.exists) {
-      return res.status(404).json({ error: 'Milestone not found' });
-    }
-
-    const milestoneData = milestoneDoc.data();
-
-    // Check if user owns the contract
-    const contractDoc = await admin.firestore()
-      .collection('contracts')
-      .doc(milestoneData.contract_id)
-      .get();
-
-    if (!contractDoc.exists) {
-      return res.status(404).json({ error: 'Contract not found' });
-    }
-
-    const contractData = contractDoc.data();
-
-    if (contractData.client_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    // Check if milestone can be rejected
-    if (milestoneData.status !== 'submitted') {
-      return res.status(400).json({ error: 'Milestone is not submitted' });
-    }
-
-    // Update milestone
-    await admin.firestore()
-      .collection('milestones')
-      .doc(milestoneId)
-      .update({
-        status: 'rejected',
-        rejected_at: admin.firestore.FieldValue.serverTimestamp(),
-        feedback,
-        rejection_reason: reason || 'No specific reason provided'
-      });
-
-    res.json({ message: 'Milestone rejected successfully' });
-
-  } catch (error) {
-    console.error('Milestone rejection error:', error);
-    res.status(500).json({ error: 'Failed to reject milestone' });
-  }
-});
-
-/**
- * PUT /api/milestones/:id/start
- * Start working on milestone (freelancers only)
- */
-router.put('/:id/start', authenticateToken, requireRole(['student']), async (req, res) => {
-  try {
-    const milestoneId = req.params.id;
-
-    // Get milestone
-    const milestoneDoc = await admin.firestore()
-      .collection('milestones')
-      .doc(milestoneId)
-      .get();
-
-    if (!milestoneDoc.exists) {
-      return res.status(404).json({ error: 'Milestone not found' });
-    }
-
-    const milestoneData = milestoneDoc.data();
-
-    // Check if user has access to this milestone
-    const contractDoc = await admin.firestore()
-      .collection('contracts')
-      .doc(milestoneData.contract_id)
-      .get();
-
-    if (!contractDoc.exists) {
-      return res.status(404).json({ error: 'Contract not found' });
-    }
-
-    const contractData = contractDoc.data();
-
-    const hasAccess = contractData.freelancer_id === req.user.id ||
-                     (contractData.team_id && await isTeamMember(contractData.team_id, req.user.id));
-
-    if (!hasAccess) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    // Check if milestone can be started
-    if (milestoneData.status !== 'pending') {
-      return res.status(400).json({ error: 'Milestone cannot be started' });
-    }
-
-    // Update milestone
-    await admin.firestore()
-      .collection('milestones')
-      .doc(milestoneId)
-      .update({
-        status: 'in_progress',
-        started_at: admin.firestore.FieldValue.serverTimestamp()
-      });
-
-    res.json({ message: 'Milestone started successfully' });
-
-  } catch (error) {
-    console.error('Milestone start error:', error);
-    res.status(500).json({ error: 'Failed to start milestone' });
+    console.error('Get milestones error:', error);
+    res.status(500).json({ error: 'Failed to get milestones' });
   }
 });
 
 /**
  * GET /api/milestones/:id
- * Get milestone details
+ * Get specific milestone by ID
  */
-router.get('/:id', authenticateToken, async (req, res) => {
+router.get('/:id', auth, async (req, res) => {
   try {
-    const milestoneId = req.params.id;
-
-    const milestoneDoc = await admin.firestore()
-      .collection('milestones')
-      .doc(milestoneId)
-      .get();
-
+    const { id } = req.params;
+    
+    const milestoneDoc = await db.collection('milestones').doc(id).get();
+    
     if (!milestoneDoc.exists) {
       return res.status(404).json({ error: 'Milestone not found' });
     }
 
     const milestoneData = milestoneDoc.data();
-
-    // Check if user has access to this milestone
-    const contractDoc = await admin.firestore()
-      .collection('contracts')
-      .doc(milestoneData.contract_id)
-      .get();
-
+    
+    // Check access permissions via contract
+    const contractDoc = await db.collection('contracts').doc(milestoneData.contract_id).get();
+    
     if (!contractDoc.exists) {
-      return res.status(404).json({ error: 'Contract not found' });
+      return res.status(404).json({ error: 'Associated contract not found' });
     }
 
     const contractData = contractDoc.data();
-
-    const hasAccess = contractData.client_id === req.user.id ||
-                     contractData.freelancer_id === req.user.id ||
-                     (contractData.team_id && await isTeamMember(contractData.team_id, req.user.id));
-
+    
+    const hasAccess = contractData.client_id === req.user.id || 
+                     contractData.freelancer_id === req.user.id;
+    
     if (!hasAccess) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
+    // Get project info
+    const projectDoc = await db.collection('projects').doc(milestoneData.project_id).get();
+    const projectData = projectDoc.exists ? projectDoc.data() : null;
+
+    // Get submissions if any
+    const submissionsSnapshot = await db.collection('milestone_submissions')
+      .where('milestone_id', '==', id)
+      .orderBy('created_at', 'desc')
+      .get();
+
+    const submissions = submissionsSnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+
+    const milestone = {
+      id,
+      ...milestoneData,
+      contract: {
+        id: milestoneData.contract_id,
+        status: contractData.status,
+        client_id: contractData.client_id,
+        freelancer_id: contractData.freelancer_id
+      },
+      project: projectData,
+      submissions,
+      user_role: contractData.client_id === req.user.id ? 'client' : 'freelancer'
+    };
+
     res.json({
-      milestone: {
-        id: milestoneDoc.id,
-        ...milestoneData,
-        due_date: milestoneData.due_date?.toDate(),
-        submitted_at: milestoneData.submitted_at?.toDate(),
-        approved_at: milestoneData.approved_at?.toDate(),
-        started_at: milestoneData.started_at?.toDate(),
-        rejected_at: milestoneData.rejected_at?.toDate()
-      }
+      success: true,
+      data: milestone
     });
 
   } catch (error) {
-    console.error('Milestone fetch error:', error);
-    res.status(500).json({ error: 'Failed to fetch milestone' });
+    console.error('Get milestone error:', error);
+    res.status(500).json({ error: 'Failed to get milestone' });
   }
 });
 
-// Helper function to check if user is team member
-async function isTeamMember(teamId, userId) {
-  const teamDoc = await admin.firestore()
-    .collection('teams')
-    .doc(teamId)
-    .get();
+/**
+ * POST /api/milestones/:id/start
+ * Start working on a milestone (freelancer only)
+ */
+router.post('/:id/start', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const milestoneDoc = await db.collection('milestones').doc(id).get();
+    
+    if (!milestoneDoc.exists) {
+      return res.status(404).json({ error: 'Milestone not found' });
+    }
 
-  if (!teamDoc.exists) return false;
+    const milestoneData = milestoneDoc.data();
+    
+    // Check if user is the freelancer
+    const contractDoc = await db.collection('contracts').doc(milestoneData.contract_id).get();
+    const contractData = contractDoc.data();
+    
+    if (contractData.freelancer_id !== req.user.id) {
+      return res.status(403).json({ error: 'Only the freelancer can start milestones' });
+    }
 
-  const teamData = teamDoc.data();
-  return teamData.member_ids && teamData.member_ids.includes(userId);
-}
+    // Check if milestone is pending
+    if (milestoneData.status !== MILESTONE_STATUS.PENDING) {
+      return res.status(400).json({ error: 'Milestone is not pending' });
+    }
+
+    await db.collection('milestones').doc(id).update({
+      status: MILESTONE_STATUS.IN_PROGRESS,
+      started_at: admin.firestore.FieldValue.serverTimestamp(),
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({
+      success: true,
+      message: 'Milestone started successfully'
+    });
+
+  } catch (error) {
+    console.error('Start milestone error:', error);
+    res.status(500).json({ error: 'Failed to start milestone' });
+  }
+});
+
+/**
+ * POST /api/milestones/:id/submit
+ * Submit milestone work (freelancer only)
+ */
+router.post('/:id/submit', auth, userRateLimit(10, 60 * 60 * 1000), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { description, deliverables, notes } = req.body;
+
+    if (!description) {
+      return res.status(400).json({ error: 'Description is required' });
+    }
+    
+    const milestoneDoc = await db.collection('milestones').doc(id).get();
+    
+    if (!milestoneDoc.exists) {
+      return res.status(404).json({ error: 'Milestone not found' });
+    }
+
+    const milestoneData = milestoneDoc.data();
+    
+    // Check if user is the freelancer
+    const contractDoc = await db.collection('contracts').doc(milestoneData.contract_id).get();
+    const contractData = contractDoc.data();
+    
+    if (contractData.freelancer_id !== req.user.id) {
+      return res.status(403).json({ error: 'Only the freelancer can submit milestones' });
+    }
+
+    // Check if milestone is in progress
+    if (milestoneData.status !== MILESTONE_STATUS.IN_PROGRESS) {
+      return res.status(400).json({ error: 'Milestone must be in progress to submit' });
+    }
+
+    const submissionId = uuidv4();
+    
+    const submissionData = {
+      id: submissionId,
+      milestone_id: id,
+      contract_id: milestoneData.contract_id,
+      project_id: milestoneData.project_id,
+      freelancer_id: req.user.id,
+      description: description.trim(),
+      deliverables: deliverables || [],
+      notes: notes || '',
+      status: 'pending_review',
+      created_at: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    // Use transaction to ensure atomicity
+    await db.runTransaction(async (transaction) => {
+      // Create submission
+      transaction.set(db.collection('milestone_submissions').doc(submissionId), submissionData);
+      
+      // Update milestone status
+      transaction.update(db.collection('milestones').doc(id), {
+        status: MILESTONE_STATUS.SUBMITTED,
+        submitted_at: admin.firestore.FieldValue.serverTimestamp(),
+        updated_at: admin.firestore.FieldValue.serverTimestamp()
+      });
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Milestone submitted successfully',
+      data: { id: submissionId, ...submissionData }
+    });
+
+  } catch (error) {
+    console.error('Submit milestone error:', error);
+    res.status(500).json({ error: 'Failed to submit milestone' });
+  }
+});
+
+/**
+ * POST /api/milestones/:id/approve
+ * Approve milestone submission (client only)
+ */
+router.post('/:id/approve', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { feedback, bonus } = req.body;
+    
+    const milestoneDoc = await db.collection('milestones').doc(id).get();
+    
+    if (!milestoneDoc.exists) {
+      return res.status(404).json({ error: 'Milestone not found' });
+    }
+
+    const milestoneData = milestoneDoc.data();
+    
+    // Check if user is the client
+    const contractDoc = await db.collection('contracts').doc(milestoneData.contract_id).get();
+    const contractData = contractDoc.data();
+    
+    if (contractData.client_id !== req.user.id) {
+      return res.status(403).json({ error: 'Only the client can approve milestones' });
+    }
+
+    // Check if milestone is submitted
+    if (milestoneData.status !== MILESTONE_STATUS.SUBMITTED) {
+      return res.status(400).json({ error: 'Milestone must be submitted to approve' });
+    }
+
+    const paymentAmount = milestoneData.amount + (bonus ? parseFloat(bonus) : 0);
+
+    // Use transaction to ensure atomicity
+    await db.runTransaction(async (transaction) => {
+      // Update milestone status
+      transaction.update(db.collection('milestones').doc(id), {
+        status: MILESTONE_STATUS.APPROVED,
+        approved_at: admin.firestore.FieldValue.serverTimestamp(),
+        approval_feedback: feedback || '',
+        bonus_amount: bonus ? parseFloat(bonus) : 0,
+        updated_at: admin.firestore.FieldValue.serverTimestamp()
+      });
+
+      // Create payment transaction
+      const transactionId = uuidv4();
+      const transactionData = {
+        id: transactionId,
+        contract_id: milestoneData.contract_id,
+        milestone_id: id,
+        from_user_id: contractData.client_id,
+        to_user_id: contractData.freelancer_id,
+        amount: paymentAmount,
+        type: 'milestone_payment',
+        status: 'completed', // In real app, this would be 'pending' until payment processing
+        description: `Payment for milestone: ${milestoneData.title}`,
+        created_at: admin.firestore.FieldValue.serverTimestamp()
+      };
+
+      transaction.set(db.collection('transactions').doc(transactionId), transactionData);
+
+      // Update latest submission status
+      const submissionsSnapshot = await db.collection('milestone_submissions')
+        .where('milestone_id', '==', id)
+        .orderBy('created_at', 'desc')
+        .limit(1)
+        .get();
+
+      if (!submissionsSnapshot.empty) {
+        const latestSubmission = submissionsSnapshot.docs[0];
+        transaction.update(latestSubmission.ref, {
+          status: 'approved',
+          approved_at: admin.firestore.FieldValue.serverTimestamp(),
+          approval_feedback: feedback || ''
+        });
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Milestone approved successfully',
+      payment_amount: paymentAmount
+    });
+
+  } catch (error) {
+    console.error('Approve milestone error:', error);
+    res.status(500).json({ error: 'Failed to approve milestone' });
+  }
+});
+
+/**
+ * POST /api/milestones/:id/reject
+ * Reject milestone submission (client only)
+ */
+router.post('/:id/reject', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { feedback, requested_changes } = req.body;
+
+    if (!feedback) {
+      return res.status(400).json({ error: 'Feedback is required when rejecting' });
+    }
+    
+    const milestoneDoc = await db.collection('milestones').doc(id).get();
+    
+    if (!milestoneDoc.exists) {
+      return res.status(404).json({ error: 'Milestone not found' });
+    }
+
+    const milestoneData = milestoneDoc.data();
+    
+    // Check if user is the client
+    const contractDoc = await db.collection('contracts').doc(milestoneData.contract_id).get();
+    const contractData = contractDoc.data();
+    
+    if (contractData.client_id !== req.user.id) {
+      return res.status(403).json({ error: 'Only the client can reject milestones' });
+    }
+
+    // Check if milestone is submitted
+    if (milestoneData.status !== MILESTONE_STATUS.SUBMITTED) {
+      return res.status(400).json({ error: 'Milestone must be submitted to reject' });
+    }
+
+    // Use transaction to ensure atomicity
+    await db.runTransaction(async (transaction) => {
+      // Update milestone status back to in_progress
+      transaction.update(db.collection('milestones').doc(id), {
+        status: MILESTONE_STATUS.IN_PROGRESS,
+        rejection_feedback: feedback.trim(),
+        requested_changes: requested_changes || [],
+        rejected_at: admin.firestore.FieldValue.serverTimestamp(),
+        updated_at: admin.firestore.FieldValue.serverTimestamp()
+      });
+
+      // Update latest submission status
+      const submissionsSnapshot = await db.collection('milestone_submissions')
+        .where('milestone_id', '==', id)
+        .orderBy('created_at', 'desc')
+        .limit(1)
+        .get();
+
+      if (!submissionsSnapshot.empty) {
+        const latestSubmission = submissionsSnapshot.docs[0];
+        transaction.update(latestSubmission.ref, {
+          status: 'rejected',
+          rejected_at: admin.firestore.FieldValue.serverTimestamp(),
+          rejection_feedback: feedback.trim(),
+          requested_changes: requested_changes || []
+        });
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Milestone rejected with feedback'
+    });
+
+  } catch (error) {
+    console.error('Reject milestone error:', error);
+    res.status(500).json({ error: 'Failed to reject milestone' });
+  }
+});
+
+/**
+ * PUT /api/milestones/:id
+ * Update milestone details (client only, before work starts)
+ */
+router.put('/:id', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, description, amount, deadline } = req.body;
+    
+    const milestoneDoc = await db.collection('milestones').doc(id).get();
+    
+    if (!milestoneDoc.exists) {
+      return res.status(404).json({ error: 'Milestone not found' });
+    }
+
+    const milestoneData = milestoneDoc.data();
+    
+    // Check if user is the client
+    const contractDoc = await db.collection('contracts').doc(milestoneData.contract_id).get();
+    const contractData = contractDoc.data();
+    
+    if (contractData.client_id !== req.user.id) {
+      return res.status(403).json({ error: 'Only the client can update milestones' });
+    }
+
+    // Can only update pending milestones
+    if (milestoneData.status !== MILESTONE_STATUS.PENDING) {
+      return res.status(400).json({ error: 'Can only update pending milestones' });
+    }
+
+    const updates = {};
+    
+    if (title) updates.title = title.trim();
+    if (description) updates.description = description.trim();
+    if (amount) updates.amount = parseFloat(amount);
+    if (deadline) updates.deadline = admin.firestore.Timestamp.fromDate(new Date(deadline));
+    
+    updates.updated_at = admin.firestore.FieldValue.serverTimestamp();
+
+    await db.collection('milestones').doc(id).update(updates);
+
+    // Get updated milestone
+    const updatedMilestoneDoc = await db.collection('milestones').doc(id).get();
+
+    res.json({
+      success: true,
+      message: 'Milestone updated successfully',
+      data: { id, ...updatedMilestoneDoc.data() }
+    });
+
+  } catch (error) {
+    console.error('Update milestone error:', error);
+    res.status(500).json({ error: 'Failed to update milestone' });
+  }
+});
+
+/**
+ * DELETE /api/milestones/:id
+ * Delete milestone (client only, before work starts)
+ */
+router.delete('/:id', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const milestoneDoc = await db.collection('milestones').doc(id).get();
+    
+    if (!milestoneDoc.exists) {
+      return res.status(404).json({ error: 'Milestone not found' });
+    }
+
+    const milestoneData = milestoneDoc.data();
+    
+    // Check if user is the client
+    const contractDoc = await db.collection('contracts').doc(milestoneData.contract_id).get();
+    const contractData = contractDoc.data();
+    
+    if (contractData.client_id !== req.user.id) {
+      return res.status(403).json({ error: 'Only the client can delete milestones' });
+    }
+
+    // Can only delete pending milestones
+    if (milestoneData.status !== MILESTONE_STATUS.PENDING) {
+      return res.status(400).json({ error: 'Can only delete pending milestones' });
+    }
+
+    await db.collection('milestones').doc(id).delete();
+
+    res.json({
+      success: true,
+      message: 'Milestone deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete milestone error:', error);
+    res.status(500).json({ error: 'Failed to delete milestone' });
+  }
+});
 
 module.exports = router;

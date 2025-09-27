@@ -1,513 +1,594 @@
-// Bid routes for GigCampus
-// Handles bid creation, acceptance, and management
+// Bids routes for GigCampus
+// Handles bid creation, management, and acceptance
 
 const express = require('express');
-const { admin } = require('../config/firebase');
-const { authenticateToken, requireRole, requireUniversityVerification } = require('../middleware/auth');
-const { notificationHandlers } = require('../utils/notifications');
+const { v4: uuidv4 } = require('uuid');
+const { admin, db } = require('../config/firebase');
+const { auth, requireUniversityVerification, userRateLimit } = require('../middleware/auth');
 
 const router = express.Router();
 
-/**
- * POST /api/bids
- * Create a new bid (students only)
- */
-router.post('/', authenticateToken, requireRole(['student']), requireUniversityVerification, async (req, res) => {
-  try {
-    const {
-      project_id,
-      price,
-      proposal,
-      eta_days,
-      portfolio_links,
-      previous_work,
-      message,
-      team_id
-    } = req.body;
-
-    // Validate required fields
-    if (!project_id || !price || !proposal || !eta_days) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-
-    // Validate price
-    if (price <= 0) {
-      return res.status(400).json({ error: 'Price must be greater than 0' });
-    }
-
-    // Check if project exists and is open
-    const projectDoc = await admin.firestore()
-      .collection('projects')
-      .doc(project_id)
-      .get();
-
-    if (!projectDoc.exists) {
-      return res.status(404).json({ error: 'Project not found' });
-    }
-
-    const projectData = projectDoc.data();
-
-    if (projectData.status !== 'open') {
-      return res.status(400).json({ error: 'Project is not accepting bids' });
-    }
-
-    // Check if user already bid on this project
-    const existingBidQuery = await admin.firestore()
-      .collection('bids')
-      .where('project_id', '==', project_id)
-      .where('freelancer_id', '==', req.user.id)
-      .get();
-
-    if (!existingBidQuery.empty) {
-      return res.status(400).json({ error: 'You have already bid on this project' });
-    }
-
-    // Create bid document
-    const bidData = {
-      id: admin.firestore().collection('bids').doc().id,
-      project_id,
-      freelancer_id: req.user.id,
-      team_id: team_id || null,
-      price: parseFloat(price),
-      proposal,
-      eta_days: parseInt(eta_days),
-      status: 'pending',
-      created_at: admin.firestore.FieldValue.serverTimestamp(),
-      updated_at: admin.firestore.FieldValue.serverTimestamp(),
-      portfolio_links: portfolio_links || [],
-      previous_work: previous_work || [],
-      is_individual: !team_id,
-      message: message || ''
-    };
-
-    // Save bid to Firestore
-    await admin.firestore()
-      .collection('bids')
-      .doc(bidData.id)
-      .set(bidData);
-
-    // Send notification to project client
-    try {
-      await notificationHandlers.bidReceived(project_id, bidData.id, projectData.client_id);
-    } catch (notificationError) {
-      console.error('Failed to send bid notification:', notificationError);
-      // Don't fail the bid creation if notification fails
-    }
-
-    res.status(201).json({
-      message: 'Bid submitted successfully',
-      bid: bidData
-    });
-
-  } catch (error) {
-    console.error('Bid creation error:', error);
-    res.status(500).json({ error: 'Failed to create bid' });
-  }
-});
+// Bid status constants
+const BID_STATUS = {
+  PENDING: 'pending',
+  ACCEPTED: 'accepted',
+  REJECTED: 'rejected',
+  WITHDRAWN: 'withdrawn'
+};
 
 /**
  * GET /api/bids
- * Get bids for current user
+ * Get bids (filtered by user role)
  */
-router.get('/', authenticateToken, async (req, res) => {
+router.get('/', auth, async (req, res) => {
   try {
-    const { status, type = 'sent' } = req.query;
-    const userId = req.user.id;
-
+    const { status, project_id, page = 1, limit = 10 } = req.query;
+    
     let query;
-
-    if (type === 'sent') {
-      // Bids sent by user
-      query = admin.firestore()
-        .collection('bids')
-        .where('freelancer_id', '==', userId);
-    } else if (type === 'received') {
-      // Bids received by user (for clients)
-      if (req.user.role !== 'client') {
-        return res.status(403).json({ error: 'Only clients can view received bids' });
-      }
-
-      // Get user's projects
-      const projectsSnapshot = await admin.firestore()
-        .collection('projects')
-        .where('client_id', '==', userId)
-        .get();
-
-      const projectIds = projectsSnapshot.docs.map(doc => doc.id);
-
-      if (projectIds.length === 0) {
-        return res.json({ bids: [] });
-      }
-
-      query = admin.firestore()
-        .collection('bids')
-        .where('project_id', 'in', projectIds);
+    
+    // Students see their own bids, clients see bids on their projects
+    if (req.user.role === 'student') {
+      query = db.collection('bids').where('freelancer_id', '==', req.user.id);
     } else {
-      return res.status(400).json({ error: 'Invalid type parameter' });
+      // For clients, get bids on their projects
+      const myProjectsSnapshot = await db.collection('projects')
+        .where('client_id', '==', req.user.id)
+        .get();
+      
+      const projectIds = myProjectsSnapshot.docs.map(doc => doc.id);
+      
+      if (projectIds.length === 0) {
+        return res.json({
+          success: true,
+          data: [],
+          pagination: { page: 1, limit: 10, total: 0, pages: 0 }
+        });
+      }
+
+      query = db.collection('bids').where('project_id', 'in', projectIds);
     }
 
-    // Apply status filter
-    if (status) {
+    // Apply filters
+    if (status && status !== 'all') {
       query = query.where('status', '==', status);
     }
 
-    // Apply ordering
+    if (project_id) {
+      query = query.where('project_id', '==', project_id);
+    }
+
     query = query.orderBy('created_at', 'desc');
+
+    // Pagination
+    const pageSize = Math.min(parseInt(limit), 50);
+    const offset = (parseInt(page) - 1) * pageSize;
+    
+    query = query.limit(pageSize).offset(offset);
 
     const snapshot = await query.get();
     const bids = [];
 
     for (const doc of snapshot.docs) {
       const bidData = doc.data();
-
-      // Get project information
-      const projectDoc = await admin.firestore()
-        .collection('projects')
-        .doc(bidData.project_id)
-        .get();
-
+      
+      // Get project info
+      const projectDoc = await db.collection('projects').doc(bidData.project_id).get();
       const projectData = projectDoc.exists ? projectDoc.data() : null;
 
-      // Get freelancer information
-      const freelancerDoc = await admin.firestore()
-        .collection('users')
-        .doc(bidData.freelancer_id)
-        .get();
-
-      const freelancerData = freelancerDoc.exists ? freelancerDoc.data() : null;
-
-      // Get student profile if applicable
-      let studentProfile = null;
-      if (freelancerData && freelancerData.role === 'student') {
-        const studentDoc = await admin.firestore()
-          .collection('student_profiles')
-          .doc(bidData.freelancer_id)
-          .get();
-
-        if (studentDoc.exists) {
-          studentProfile = studentDoc.data();
-        }
+      // Get bidder info (for clients viewing bids)
+      let bidderData = null;
+      if (req.user.role !== 'student') {
+        const bidderDoc = await db.collection('users').doc(bidData.freelancer_id).get();
+        bidderData = bidderDoc.exists ? bidderDoc.data() : null;
       }
 
       bids.push({
         id: doc.id,
         ...bidData,
-        created_at: bidData.created_at?.toDate(),
         project: projectData ? {
-          id: projectData.id,
+          id: bidData.project_id,
           title: projectData.title,
           budget: projectData.budget,
-          deadline: projectData.deadline?.toDate()
+          status: projectData.status
         } : null,
-        freelancer: freelancerData ? {
-          id: freelancerData.id,
-          name: freelancerData.name,
-          university: freelancerData.university
-        } : null,
-        studentProfile: studentProfile ? {
-          skills: studentProfile.skills,
-          hourly_rate: studentProfile.hourly_rate,
-          reputation_score: studentProfile.reputation_score,
-          completed_projects: studentProfile.completed_projects
+        bidder: bidderData ? {
+          id: bidderData.id,
+          name: bidderData.name,
+          university: bidderData.university,
+          university_verified: bidderData.university_verified,
+          skills: bidderData.skills || [],
+          average_rating: bidderData.average_rating || 0,
+          completed_projects: bidderData.completed_projects || 0
         } : null
       });
     }
 
-    res.json({ bids });
+    res.json({
+      success: true,
+      data: bids
+    });
 
   } catch (error) {
-    console.error('Bids fetch error:', error);
-    res.status(500).json({ error: 'Failed to fetch bids' });
+    console.error('Get bids error:', error);
+    res.status(500).json({ error: 'Failed to get bids' });
   }
 });
 
 /**
  * GET /api/bids/:id
- * Get bid details by ID
+ * Get specific bid by ID
  */
-router.get('/:id', authenticateToken, async (req, res) => {
+router.get('/:id', auth, async (req, res) => {
   try {
-    const bidId = req.params.id;
-
-    const bidDoc = await admin.firestore()
-      .collection('bids')
-      .doc(bidId)
-      .get();
-
+    const { id } = req.params;
+    
+    const bidDoc = await db.collection('bids').doc(id).get();
+    
     if (!bidDoc.exists) {
       return res.status(404).json({ error: 'Bid not found' });
     }
 
     const bidData = bidDoc.data();
-
-    // Check if user has access to this bid
-    const hasAccess = bidData.freelancer_id === req.user.id || 
-                     (req.user.role === 'client' && await isProjectOwner(bidData.project_id, req.user.id));
-
-    if (!hasAccess) {
+    
+    // Check access permissions
+    const canAccess = bidData.freelancer_id === req.user.id || 
+                     (await checkProjectOwnership(bidData.project_id, req.user.id));
+    
+    if (!canAccess) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    // Get project information
-    const projectDoc = await admin.firestore()
-      .collection('projects')
-      .doc(bidData.project_id)
-      .get();
-
+    // Get project info
+    const projectDoc = await db.collection('projects').doc(bidData.project_id).get();
     const projectData = projectDoc.exists ? projectDoc.data() : null;
 
-    // Get freelancer information
-    const freelancerDoc = await admin.firestore()
-      .collection('users')
-      .doc(bidData.freelancer_id)
-      .get();
+    // Get bidder info
+    const bidderDoc = await db.collection('users').doc(bidData.freelancer_id).get();
+    const bidderData = bidderDoc.exists ? bidderDoc.data() : null;
 
-    const freelancerData = freelancerDoc.exists ? freelancerDoc.data() : null;
+    const bid = {
+      id,
+      ...bidData,
+      project: projectData ? {
+        id: bidData.project_id,
+        title: projectData.title,
+        description: projectData.description,
+        budget: projectData.budget,
+        deadline: projectData.deadline,
+        status: projectData.status,
+        client_id: projectData.client_id
+      } : null,
+      bidder: bidderData ? {
+        id: bidderData.id,
+        name: bidderData.name,
+        university: bidderData.university,
+        university_verified: bidderData.university_verified,
+        bio: bidderData.bio,
+        skills: bidderData.skills || [],
+        portfolio_links: bidderData.portfolio_links || [],
+        average_rating: bidderData.average_rating || 0,
+        completed_projects: bidderData.completed_projects || 0
+      } : null
+    };
 
     res.json({
-      bid: {
-        id: bidDoc.id,
-        ...bidData,
-        created_at: bidData.created_at?.toDate()
-      },
-      project: projectData,
-      freelancer: freelancerData
+      success: true,
+      data: bid
     });
 
   } catch (error) {
-    console.error('Bid fetch error:', error);
-    res.status(500).json({ error: 'Failed to fetch bid' });
+    console.error('Get bid error:', error);
+    res.status(500).json({ error: 'Failed to get bid' });
   }
 });
 
 /**
- * PUT /api/bids/:id/accept
- * Accept a bid (clients only)
+ * POST /api/bids
+ * Create a new bid
  */
-router.put('/:id/accept', authenticateToken, requireRole(['client']), async (req, res) => {
+router.post('/', auth, requireUniversityVerification, userRateLimit(20, 60 * 60 * 1000), async (req, res) => {
   try {
-    const bidId = req.params.id;
+    const { project_id, amount, timeline, proposal, milestones } = req.body;
 
-    // Get bid
-    const bidDoc = await admin.firestore()
-      .collection('bids')
-      .doc(bidId)
-      .get();
-
-    if (!bidDoc.exists) {
-      return res.status(404).json({ error: 'Bid not found' });
+    // Validate required fields
+    if (!project_id || !amount || !timeline || !proposal) {
+      return res.status(400).json({ 
+        error: 'Missing required fields',
+        required: ['project_id', 'amount', 'timeline', 'proposal']
+      });
     }
 
-    const bidData = bidDoc.data();
+    // Validate amount
+    if (amount < 25) {
+      return res.status(400).json({ error: 'Bid amount must be at least $25' });
+    }
 
-    // Check if user owns the project
-    const projectDoc = await admin.firestore()
-      .collection('projects')
-      .doc(bidData.project_id)
-      .get();
+    // Validate proposal length
+    if (proposal.length < 50) {
+      return res.status(400).json({ 
+        error: 'Proposal must be at least 50 characters long' 
+      });
+    }
 
+    // Check if project exists and is open
+    const projectDoc = await db.collection('projects').doc(project_id).get();
+    
     if (!projectDoc.exists) {
       return res.status(404).json({ error: 'Project not found' });
     }
 
-    const projectData = projectDoc.data();
-
-    if (projectData.client_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access denied' });
+    const project = projectDoc.data();
+    
+    if (project.status !== 'open') {
+      return res.status(400).json({ error: 'Project is not accepting bids' });
     }
 
-    // Check if bid is still pending
-    if (bidData.status !== 'pending') {
-      return res.status(400).json({ error: 'Bid is no longer pending' });
+    // Can't bid on own projects
+    if (project.client_id === req.user.id) {
+      return res.status(400).json({ error: 'Cannot bid on your own project' });
     }
 
-    // Check if project is still open
-    if (projectData.status !== 'open') {
-      return res.status(400).json({ error: 'Project is no longer accepting bids' });
-    }
-
-    // Start transaction to accept bid and create contract
-    const batch = admin.firestore().batch();
-
-    // Update bid status
-    batch.update(bidDoc.ref, {
-      status: 'accepted',
-      updated_at: admin.firestore.FieldValue.serverTimestamp()
-    });
-
-    // Update project status
-    batch.update(projectDoc.ref, {
-      status: 'in_progress',
-      updated_at: admin.firestore.FieldValue.serverTimestamp()
-    });
-
-    // Create contract
-    const contractData = {
-      id: admin.firestore().collection('contracts').doc().id,
-      project_id: bidData.project_id,
-      accepted_bid_id: bidId,
-      freelancer_id: bidData.freelancer_id,
-      team_id: bidData.team_id,
-      client_id: req.user.id,
-      status: 'active',
-      escrow_balance: 0, // Will be updated when client deposits
-      total_amount: bidData.price,
-      milestones: projectData.milestones || [],
-      created_at: admin.firestore.FieldValue.serverTimestamp(),
-      started_at: admin.firestore.FieldValue.serverTimestamp()
-    };
-
-    const contractRef = admin.firestore().collection('contracts').doc(contractData.id);
-    batch.set(contractRef, contractData);
-
-    // Reject all other bids for this project
-    const otherBidsSnapshot = await admin.firestore()
-      .collection('bids')
-      .where('project_id', '==', bidData.project_id)
-      .where('freelancer_id', '!=', bidData.freelancer_id)
+    // Check if user already has a pending bid on this project
+    const existingBidSnapshot = await db.collection('bids')
+      .where('project_id', '==', project_id)
+      .where('freelancer_id', '==', req.user.id)
+      .where('status', 'in', ['pending', 'accepted'])
       .get();
 
-    otherBidsSnapshot.forEach(doc => {
-      batch.update(doc.ref, {
-        status: 'rejected',
+    if (!existingBidSnapshot.empty) {
+      return res.status(400).json({ 
+        error: 'You already have an active bid on this project' 
+      });
+    }
+
+    const bidId = uuidv4();
+    
+    const newBid = {
+      id: bidId,
+      project_id,
+      freelancer_id: req.user.id,
+      amount: parseFloat(amount),
+      timeline: parseInt(timeline), // days
+      proposal: proposal.trim(),
+      milestones: milestones || [],
+      status: BID_STATUS.PENDING,
+      
+      // Metadata
+      created_at: admin.firestore.FieldValue.serverTimestamp(),
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    // Use transaction to ensure atomicity
+    await db.runTransaction(async (transaction) => {
+      // Create the bid
+      transaction.set(db.collection('bids').doc(bidId), newBid);
+      
+      // Update project bid count
+      transaction.update(db.collection('projects').doc(project_id), {
+        bid_count: admin.firestore.FieldValue.increment(1),
         updated_at: admin.firestore.FieldValue.serverTimestamp()
       });
     });
 
-    // Commit transaction
-    await batch.commit();
-
-    // Send notification to freelancer
-    try {
-      await notificationHandlers.bidAccepted(bidId, bidData.freelancer_id);
-    } catch (notificationError) {
-      console.error('Failed to send bid accepted notification:', notificationError);
-    }
-
-    res.json({
-      message: 'Bid accepted successfully',
-      contract: contractData
+    res.status(201).json({
+      success: true,
+      message: 'Bid submitted successfully',
+      data: { id: bidId, ...newBid }
     });
 
   } catch (error) {
-    console.error('Bid acceptance error:', error);
+    console.error('Create bid error:', error);
+    res.status(500).json({ error: 'Failed to create bid' });
+  }
+});
+
+/**
+ * PUT /api/bids/:id
+ * Update bid (only by bidder, only if pending)
+ */
+router.put('/:id', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { amount, timeline, proposal, milestones } = req.body;
+    
+    const bidDoc = await db.collection('bids').doc(id).get();
+    
+    if (!bidDoc.exists) {
+      return res.status(404).json({ error: 'Bid not found' });
+    }
+
+    const bid = bidDoc.data();
+    
+    // Check ownership
+    if (bid.freelancer_id !== req.user.id) {
+      return res.status(403).json({ error: 'You can only update your own bids' });
+    }
+
+    // Can only update pending bids
+    if (bid.status !== BID_STATUS.PENDING) {
+      return res.status(400).json({ error: 'Can only update pending bids' });
+    }
+
+    const updates = {};
+    
+    if (amount !== undefined) {
+      if (amount < 25) {
+        return res.status(400).json({ error: 'Bid amount must be at least $25' });
+      }
+      updates.amount = parseFloat(amount);
+    }
+    
+    if (timeline !== undefined) {
+      updates.timeline = parseInt(timeline);
+    }
+    
+    if (proposal !== undefined) {
+      if (proposal.length < 50) {
+        return res.status(400).json({ 
+          error: 'Proposal must be at least 50 characters long' 
+        });
+      }
+      updates.proposal = proposal.trim();
+    }
+    
+    if (milestones !== undefined) {
+      updates.milestones = milestones;
+    }
+
+    updates.updated_at = admin.firestore.FieldValue.serverTimestamp();
+
+    await db.collection('bids').doc(id).update(updates);
+
+    // Get updated bid
+    const updatedBidDoc = await db.collection('bids').doc(id).get();
+
+    res.json({
+      success: true,
+      message: 'Bid updated successfully',
+      data: { id, ...updatedBidDoc.data() }
+    });
+
+  } catch (error) {
+    console.error('Update bid error:', error);
+    res.status(500).json({ error: 'Failed to update bid' });
+  }
+});
+
+/**
+ * POST /api/bids/:id/accept
+ * Accept a bid (only by project owner)
+ */
+router.post('/:id/accept', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const bidDoc = await db.collection('bids').doc(id).get();
+    
+    if (!bidDoc.exists) {
+      return res.status(404).json({ error: 'Bid not found' });
+    }
+
+    const bid = bidDoc.data();
+    
+    // Check if user owns the project
+    const projectDoc = await db.collection('projects').doc(bid.project_id).get();
+    if (!projectDoc.exists) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    const project = projectDoc.data();
+    
+    if (project.client_id !== req.user.id) {
+      return res.status(403).json({ error: 'You can only accept bids on your own projects' });
+    }
+
+    // Check if bid is still pending
+    if (bid.status !== BID_STATUS.PENDING) {
+      return res.status(400).json({ error: 'Bid is no longer pending' });
+    }
+
+    // Check if project is still open
+    if (project.status !== 'open') {
+      return res.status(400).json({ error: 'Project is no longer accepting bids' });
+    }
+
+    const contractId = uuidv4();
+
+    // Use transaction to ensure atomicity
+    await db.runTransaction(async (transaction) => {
+      // Accept the bid
+      transaction.update(db.collection('bids').doc(id), {
+        status: BID_STATUS.ACCEPTED,
+        accepted_at: admin.firestore.FieldValue.serverTimestamp(),
+        updated_at: admin.firestore.FieldValue.serverTimestamp()
+      });
+
+      // Reject all other bids for this project
+      const otherBidsSnapshot = await db.collection('bids')
+        .where('project_id', '==', bid.project_id)
+        .where('status', '==', BID_STATUS.PENDING)
+        .get();
+
+      otherBidsSnapshot.docs.forEach(doc => {
+        if (doc.id !== id) {
+          transaction.update(doc.ref, {
+            status: BID_STATUS.REJECTED,
+            rejected_at: admin.firestore.FieldValue.serverTimestamp(),
+            updated_at: admin.firestore.FieldValue.serverTimestamp()
+          });
+        }
+      });
+
+      // Update project status
+      transaction.update(db.collection('projects').doc(bid.project_id), {
+        status: 'in_progress',
+        freelancer_id: bid.freelancer_id,
+        accepted_bid_id: id,
+        started_at: admin.firestore.FieldValue.serverTimestamp(),
+        updated_at: admin.firestore.FieldValue.serverTimestamp()
+      });
+
+      // Create contract
+      const contractData = {
+        id: contractId,
+        project_id: bid.project_id,
+        client_id: project.client_id,
+        freelancer_id: bid.freelancer_id,
+        bid_id: id,
+        amount: bid.amount,
+        status: 'active',
+        created_at: admin.firestore.FieldValue.serverTimestamp(),
+        updated_at: admin.firestore.FieldValue.serverTimestamp()
+      };
+
+      transaction.set(db.collection('contracts').doc(contractId), contractData);
+
+      // Create milestones if they exist in the bid
+      if (bid.milestones && bid.milestones.length > 0) {
+        bid.milestones.forEach((milestone, index) => {
+          const milestoneId = uuidv4();
+          const milestoneData = {
+            id: milestoneId,
+            project_id: bid.project_id,
+            contract_id: contractId,
+            title: milestone.title,
+            description: milestone.description || '',
+            amount: parseFloat(milestone.amount),
+            deadline: admin.firestore.Timestamp.fromDate(new Date(milestone.deadline)),
+            order: index + 1,
+            status: 'pending',
+            created_at: admin.firestore.FieldValue.serverTimestamp()
+          };
+          
+          transaction.set(db.collection('milestones').doc(milestoneId), milestoneData);
+        });
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Bid accepted successfully',
+      contract_id: contractId
+    });
+
+  } catch (error) {
+    console.error('Accept bid error:', error);
     res.status(500).json({ error: 'Failed to accept bid' });
   }
 });
 
 /**
- * PUT /api/bids/:id/reject
- * Reject a bid (clients only)
+ * POST /api/bids/:id/reject
+ * Reject a bid (only by project owner)
  */
-router.put('/:id/reject', authenticateToken, requireRole(['client']), async (req, res) => {
+router.post('/:id/reject', auth, async (req, res) => {
   try {
-    const bidId = req.params.id;
-
-    // Get bid
-    const bidDoc = await admin.firestore()
-      .collection('bids')
-      .doc(bidId)
-      .get();
-
+    const { id } = req.params;
+    const { reason } = req.body;
+    
+    const bidDoc = await db.collection('bids').doc(id).get();
+    
     if (!bidDoc.exists) {
       return res.status(404).json({ error: 'Bid not found' });
     }
 
-    const bidData = bidDoc.data();
-
+    const bid = bidDoc.data();
+    
     // Check if user owns the project
-    const projectDoc = await admin.firestore()
-      .collection('projects')
-      .doc(bidData.project_id)
-      .get();
-
-    if (!projectDoc.exists) {
-      return res.status(404).json({ error: 'Project not found' });
-    }
-
-    const projectData = projectDoc.data();
-
-    if (projectData.client_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access denied' });
+    const canReject = await checkProjectOwnership(bid.project_id, req.user.id);
+    
+    if (!canReject) {
+      return res.status(403).json({ error: 'You can only reject bids on your own projects' });
     }
 
     // Check if bid is still pending
-    if (bidData.status !== 'pending') {
+    if (bid.status !== BID_STATUS.PENDING) {
       return res.status(400).json({ error: 'Bid is no longer pending' });
     }
 
-    // Update bid status
-    await admin.firestore()
-      .collection('bids')
-      .doc(bidId)
-      .update({
-        status: 'rejected',
-        updated_at: admin.firestore.FieldValue.serverTimestamp()
-      });
+    const updates = {
+      status: BID_STATUS.REJECTED,
+      rejected_at: admin.firestore.FieldValue.serverTimestamp(),
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    };
 
-    res.json({ message: 'Bid rejected successfully' });
+    if (reason) {
+      updates.rejection_reason = reason.trim();
+    }
+
+    await db.collection('bids').doc(id).update(updates);
+
+    res.json({
+      success: true,
+      message: 'Bid rejected successfully'
+    });
 
   } catch (error) {
-    console.error('Bid rejection error:', error);
+    console.error('Reject bid error:', error);
     res.status(500).json({ error: 'Failed to reject bid' });
   }
 });
 
 /**
- * DELETE /api/bids/:id
- * Delete a bid (freelancer only)
+ * POST /api/bids/:id/withdraw
+ * Withdraw a bid (only by bidder, only if pending)
  */
-router.delete('/:id', authenticateToken, requireRole(['student']), async (req, res) => {
+router.post('/:id/withdraw', auth, async (req, res) => {
   try {
-    const bidId = req.params.id;
-
-    // Get bid
-    const bidDoc = await admin.firestore()
-      .collection('bids')
-      .doc(bidId)
-      .get();
-
+    const { id } = req.params;
+    
+    const bidDoc = await db.collection('bids').doc(id).get();
+    
     if (!bidDoc.exists) {
       return res.status(404).json({ error: 'Bid not found' });
     }
 
-    const bidData = bidDoc.data();
-
-    // Check if user owns the bid
-    if (bidData.freelancer_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access denied' });
+    const bid = bidDoc.data();
+    
+    // Check ownership
+    if (bid.freelancer_id !== req.user.id) {
+      return res.status(403).json({ error: 'You can only withdraw your own bids' });
     }
 
-    // Check if bid is still pending
-    if (bidData.status !== 'pending') {
-      return res.status(400).json({ error: 'Cannot delete accepted or rejected bid' });
+    // Can only withdraw pending bids
+    if (bid.status !== BID_STATUS.PENDING) {
+      return res.status(400).json({ error: 'Can only withdraw pending bids' });
     }
 
-    // Delete bid
-    await admin.firestore()
-      .collection('bids')
-      .doc(bidId)
-      .delete();
+    // Use transaction to ensure atomicity
+    await db.runTransaction(async (transaction) => {
+      // Update bid status
+      transaction.update(db.collection('bids').doc(id), {
+        status: BID_STATUS.WITHDRAWN,
+        withdrawn_at: admin.firestore.FieldValue.serverTimestamp(),
+        updated_at: admin.firestore.FieldValue.serverTimestamp()
+      });
 
-    res.json({ message: 'Bid deleted successfully' });
+      // Update project bid count
+      transaction.update(db.collection('projects').doc(bid.project_id), {
+        bid_count: admin.firestore.FieldValue.increment(-1)
+      });
+    });
+
+    res.json({
+      success: true,
+      message: 'Bid withdrawn successfully'
+    });
 
   } catch (error) {
-    console.error('Bid deletion error:', error);
-    res.status(500).json({ error: 'Failed to delete bid' });
+    console.error('Withdraw bid error:', error);
+    res.status(500).json({ error: 'Failed to withdraw bid' });
   }
 });
 
-// Helper function to check if user owns a project
-async function isProjectOwner(projectId, userId) {
-  const projectDoc = await admin.firestore()
-    .collection('projects')
-    .doc(projectId)
-    .get();
-
-  if (!projectDoc.exists) return false;
-
-  const projectData = projectDoc.data();
-  return projectData.client_id === userId;
+// Helper function to check project ownership
+async function checkProjectOwnership(projectId, userId) {
+  try {
+    const projectDoc = await db.collection('projects').doc(projectId).get();
+    return projectDoc.exists && projectDoc.data().client_id === userId;
+  } catch (error) {
+    return false;
+  }
 }
 
 module.exports = router;

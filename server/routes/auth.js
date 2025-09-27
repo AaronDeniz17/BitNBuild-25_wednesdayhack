@@ -1,251 +1,204 @@
 // Authentication routes for GigCampus
-// Handles user registration, login, and university verification
+// Handles user registration, login, profile management, and university verification
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { admin, auth } = require('../config/firebase');
-const { authenticateToken } = require('../middleware/auth');
+const { v4: uuidv4 } = require('uuid');
+const { admin, db, auth: firebaseAuth } = require('../config/firebase');
+const { auth, optionalAuth, requireUniversityVerification, userRateLimit } = require('../middleware/auth');
 
 const router = express.Router();
 
+// University domains for validation
+const UNIVERSITY_DOMAINS = [
+  'edu', 'ac.uk', 'ac.in', 'edu.au', 'edu.sg', 'edu.my', 'edu.ph',
+  'university.edu', 'college.edu', 'school.edu'
+];
+
+// Helper function to validate university email
+const isUniversityEmail = (email) => {
+  const domain = email.split('@')[1]?.toLowerCase();
+  return UNIVERSITY_DOMAINS.some(uniDomain => 
+    domain === uniDomain || domain?.endsWith('.' + uniDomain)
+  );
+};
+
 /**
  * POST /api/auth/register
- * Register a new user (student or client)
+ * Register a new user profile after Firebase Auth registration
  */
-router.post('/register', async (req, res) => {
+router.post('/register', userRateLimit(5, 15 * 60 * 1000), async (req, res) => {
   try {
-    const { email, password, name, role, university, phone } = req.body;
+    const { 
+      idToken,
+      name, 
+      role = 'student', 
+      university,
+      university_major,
+      graduation_year,
+      phone 
+    } = req.body;
 
     // Validate required fields
-    if (!email || !password || !name || !role) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-
-    // Validate role
-    if (!['student', 'client'].includes(role)) {
-      return res.status(400).json({ error: 'Invalid role' });
-    }
-
-    // Check if user already exists in Firestore
-    const existingUser = await admin.firestore()
-      .collection('users')
-      .where('email', '==', email)
-      .get();
-
-    if (!existingUser.empty) {
-      return res.status(400).json({ error: 'Email already registered. Please use login instead.' });
-    }
-
-    // Hash password
-    const hashedPassword = await bcrypt.hash(password, 12);
-
-    let userRecord;
-    
-    // Create user in Firebase Auth
-    try {
-      userRecord = await auth.createUser({
-        email,
-        password,
-        displayName: name
+    if (!idToken || !name || !university) {
+      return res.status(400).json({ 
+        error: 'Missing required fields',
+        required: ['idToken', 'name', 'university']
       });
-    } catch (createError) {
-      if (createError.code === 'auth/email-already-exists') {
-        return res.status(400).json({ error: 'Email already registered. Please use login instead.' });
-      }
-      throw createError;
     }
 
-    // Create user document in Firestore
+    // Verify the Firebase ID token
+    const decodedToken = await firebaseAuth.verifyIdToken(idToken);
+    const { uid, email } = decodedToken;
+
+    // Check if user already exists
+    const existingUser = await db.collection('users').doc(uid).get();
+    if (existingUser.exists) {
+      return res.status(400).json({ error: 'User profile already exists' });
+    }
+
+    // Check if it's a university email
+    const isUniEmail = isUniversityEmail(email);
+
+    // Create user profile in Firestore
     const userData = {
-      id: userRecord.uid,
+      id: uid,
       email,
       name,
       role,
-      password: hashedPassword,
-      university: university || '',
+      university,
+      university_major: university_major || null,
+      graduation_year: graduation_year || null,
+      phone: phone || null,
+      university_verified: false,
+      is_university_email: isUniEmail,
+      profile_completed: false,
       created_at: admin.firestore.FieldValue.serverTimestamp(),
-      last_login: admin.firestore.FieldValue.serverTimestamp(),
-      phone: phone || '',
-      is_active: true
+      updated_at: admin.firestore.FieldValue.serverTimestamp(),
+      is_active: true,
+      
+      // Profile fields
+      bio: null,
+      skills: [],
+      portfolio_links: [],
+      hourly_rate: null,
+      availability: 'part-time',
+      languages: [],
+      linkedin_url: null,
+      github_url: null,
+      
+      // Stats
+      completed_projects: 0,
+      total_earnings: 0,
+      average_rating: 0,
+      total_reviews: 0,
+      badges: []
     };
 
-    await admin.firestore().collection('users').doc(userRecord.uid).set(userData);
+    await db.collection('users').doc(userRecord.uid).set(userData);
 
-    // Create student profile if role is student
-    if (role === 'student') {
-      const studentProfile = {
-        user_id: userRecord.uid,
-        skills: [],
-        micro_skills: [],
-        portfolio_links: [],
-        availability: 'part-time',
-        hourly_rate: 0,
-        bio: '',
-        badges: [],
-        reputation_score: 0,
-        completed_projects: 0,
-        on_time_rate: 0,
-        total_earnings: 0,
-        university_major: '',
-        graduation_year: null,
-        linkedin_url: '',
-        github_url: '',
-        timezone: 'UTC',
-        languages: ['English'],
-        is_available: true
-      };
-
-      await admin.firestore()
-        .collection('student_profiles')
-        .doc(userRecord.uid)
-        .set(studentProfile);
+    // Send verification email if university email
+    if (isUniEmail) {
+      await firebaseAuth.generateEmailVerificationLink(email);
     }
-
-    // Generate JWT token
-    const token = jwt.sign(
-      { userId: userRecord.uid, email, role },
-      process.env.JWT_SECRET || 'gigcampus-secret-key',
-      { expiresIn: '7d' }
-    );
 
     res.status(201).json({
       message: 'User registered successfully',
-      token,
       user: {
         id: userRecord.uid,
         email,
         name,
-        role
-      }
+        role,
+        university,
+        university_verified: false,
+        is_university_email: isUniEmail
+      },
+      requiresVerification: isUniEmail
     });
 
   } catch (error) {
     console.error('Registration error:', error);
-    res.status(500).json({ error: 'Registration failed' });
+    
+    if (error.code === 'auth/email-already-exists') {
+      return res.status(400).json({ error: 'Email already registered' });
+    }
+    
+    res.status(500).json({ 
+      error: 'Registration failed',
+      message: error.message 
+    });
   }
 });
 
 /**
  * POST /api/auth/login
- * Login user with email and password
+ * Login user (handled by Firebase Auth on frontend)
+ * This endpoint validates the token and returns user data
  */
 router.post('/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { idToken } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password required' });
+    if (!idToken) {
+      return res.status(400).json({ error: 'ID token required' });
     }
 
-    // Get user from Firestore
-    const userQuery = await admin.firestore()
-      .collection('users')
-      .where('email', '==', email)
-      .get();
-
-    if (userQuery.empty) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+    // Verify the Firebase ID token
+    const decodedToken = await firebaseAuth.verifyIdToken(idToken);
+    
+    // Get user data from Firestore
+    const userDoc = await db.collection('users').doc(decodedToken.uid).get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: 'User profile not found' });
     }
 
-    const userDoc = userQuery.docs[0];
     const userData = userDoc.data();
 
-    if (!userData.is_active) {
-      return res.status(401).json({ error: 'Account deactivated' });
-    }
-
-    // For MVP: Simple password check
-    // TODO: Implement proper Firebase Auth verification
-    if (!userData.password) {
-      return res.status(401).json({ error: 'Account setup incomplete. Please register again.' });
-    }
-    
-    const isValidPassword = await bcrypt.compare(password, userData.password);
-    
-    if (!isValidPassword) {
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
-
     // Update last login
-    await admin.firestore()
-      .collection('users')
-      .doc(userData.id)
-      .update({
-        last_login: admin.firestore.FieldValue.serverTimestamp()
-      });
-
-    // Generate JWT token
-    const token = jwt.sign(
-      { userId: userData.id, email, role: userData.role },
-      process.env.JWT_SECRET || 'gigcampus-secret-key',
-      { expiresIn: '7d' }
-    );
+    await db.collection('users').doc(decodedToken.uid).update({
+      last_login: admin.firestore.FieldValue.serverTimestamp()
+    });
 
     res.json({
       message: 'Login successful',
-      token,
       user: {
-        id: userData.id,
-        email: userData.email,
-        name: userData.name,
-        role: userData.role
+        id: decodedToken.uid,
+        email: decodedToken.email,
+        ...userData
       }
     });
 
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ error: 'Login failed' });
+    res.status(401).json({ 
+      error: 'Login failed',
+      message: 'Invalid credentials or token'
+    });
   }
 });
 
-
 /**
  * GET /api/auth/profile
- * Get current user profile
+ * Get current user's profile
  */
-router.get('/profile', authenticateToken, async (req, res) => {
+router.get('/profile', auth, async (req, res) => {
   try {
-    const userId = req.user.id;
-
-    // Get user data
-    const userDoc = await admin.firestore().collection('users').doc(userId).get();
+    const userDoc = await db.collection('users').doc(req.user.id).get();
     
     if (!userDoc.exists) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const userData = userDoc.data();
-
-    // Get student profile if user is a student
-    let studentProfile = null;
-    if (userData.role === 'student') {
-      const studentDoc = await admin.firestore()
-        .collection('student_profiles')
-        .doc(userId)
-        .get();
-      
-      if (studentDoc.exists) {
-        studentProfile = studentDoc.data();
-      }
-    }
-
     res.json({
-      user: {
-        id: userData.id,
-        email: userData.email,
-        name: userData.name,
-        role: userData.role,
-        university: userData.university,
-        created_at: userData.created_at,
-        profile_picture: userData.profile_picture
-      },
-      studentProfile
+      success: true,
+      data: userDoc.data()
     });
 
   } catch (error) {
-    console.error('Profile fetch error:', error);
-    res.status(500).json({ error: 'Failed to fetch profile' });
+    console.error('Get profile error:', error);
+    res.status(500).json({ error: 'Failed to get profile' });
   }
 });
 
@@ -253,49 +206,363 @@ router.get('/profile', authenticateToken, async (req, res) => {
  * PUT /api/auth/profile
  * Update user profile
  */
-router.put('/profile', authenticateToken, async (req, res) => {
+router.put('/profile', auth, async (req, res) => {
   try {
-    const userId = req.user.id;
-    const updates = req.body;
+    const allowedFields = [
+      'name', 'bio', 'skills', 'portfolio_links', 'hourly_rate',
+      'availability', 'university_major', 'graduation_year',
+      'languages', 'linkedin_url', 'github_url', 'phone'
+    ];
 
-    // Remove sensitive fields
-    delete updates.id;
-    delete updates.email;
-    delete updates.role;
-
-    // Update user document
-    await admin.firestore()
-      .collection('users')
-      .doc(userId)
-      .update({
-        ...updates,
-        updated_at: admin.firestore.FieldValue.serverTimestamp()
-      });
-
-    // Update student profile if applicable
-    if (req.user.role === 'student' && updates.studentProfile) {
-      await admin.firestore()
-        .collection('student_profiles')
-        .doc(userId)
-        .update(updates.studentProfile);
+    const updates = {};
+    for (const field of allowedFields) {
+      if (req.body[field] !== undefined) {
+        updates[field] = req.body[field];
+      }
     }
 
-    res.json({ message: 'Profile updated successfully' });
+    // Validate hourly rate
+    if (updates.hourly_rate && (updates.hourly_rate < 5 || updates.hourly_rate > 500)) {
+      return res.status(400).json({ 
+        error: 'Hourly rate must be between $5 and $500' 
+      });
+    }
+
+    // Validate skills array
+    if (updates.skills && !Array.isArray(updates.skills)) {
+      return res.status(400).json({ error: 'Skills must be an array' });
+    }
+
+    // Add update timestamp
+    updates.updated_at = admin.firestore.FieldValue.serverTimestamp();
+
+    // Check if profile is now complete
+    const requiredFields = ['name', 'bio', 'skills', 'university_major'];
+    const userDoc = await db.collection('users').doc(req.user.id).get();
+    const currentData = userDoc.data();
+    
+    const isComplete = requiredFields.every(field => 
+      (updates[field] !== undefined ? updates[field] : currentData[field])
+    );
+    
+    if (isComplete && !currentData.profile_completed) {
+      updates.profile_completed = true;
+    }
+
+    await db.collection('users').doc(req.user.id).update(updates);
+
+    // Get updated user data
+    const updatedUserDoc = await db.collection('users').doc(req.user.id).get();
+
+    res.json({
+      success: true,
+      message: 'Profile updated successfully',
+      data: updatedUserDoc.data()
+    });
 
   } catch (error) {
-    console.error('Profile update error:', error);
-    res.status(500).json({ error: 'Profile update failed' });
+    console.error('Update profile error:', error);
+    res.status(500).json({ error: 'Failed to update profile' });
+  }
+});
+
+/**
+ * GET /api/auth/user/:userId
+ * Get public user profile
+ */
+router.get('/user/:userId', optionalAuth, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    const userDoc = await db.collection('users').doc(userId).get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const userData = userDoc.data();
+    
+    // Return public profile data only
+    const publicData = {
+      id: userData.id,
+      name: userData.name,
+      bio: userData.bio,
+      university: userData.university,
+      university_major: userData.university_major,
+      graduation_year: userData.graduation_year,
+      university_verified: userData.university_verified,
+      skills: userData.skills || [],
+      portfolio_links: userData.portfolio_links || [],
+      hourly_rate: userData.hourly_rate,
+      availability: userData.availability,
+      languages: userData.languages || [],
+      linkedin_url: userData.linkedin_url,
+      github_url: userData.github_url,
+      completed_projects: userData.completed_projects || 0,
+      total_earnings: userData.total_earnings || 0,
+      average_rating: userData.average_rating || 0,
+      total_reviews: userData.total_reviews || 0,
+      badges: userData.badges || [],
+      created_at: userData.created_at
+    };
+
+    res.json({
+      success: true,
+      data: publicData
+    });
+
+  } catch (error) {
+    console.error('Get user profile error:', error);
+    res.status(500).json({ error: 'Failed to get user profile' });
+  }
+});
+
+/**
+ * POST /api/auth/verify-university
+ * Send university verification email
+ */
+router.post('/verify-university', auth, async (req, res) => {
+  try {
+    const user = req.user;
+    
+    if (!user.is_university_email) {
+      return res.status(400).json({ 
+        error: 'Not a university email',
+        message: 'Please use your university email address for verification'
+      });
+    }
+
+    if (user.university_verified) {
+      return res.status(400).json({ 
+        error: 'Already verified',
+        message: 'Your university email is already verified'
+      });
+    }
+
+    // Generate verification link
+    const actionCodeSettings = {
+      url: `${process.env.CLIENT_URL}/verify-email?mode=verifyEmail`,
+      handleCodeInApp: true
+    };
+
+    const link = await firebaseAuth.generateEmailVerificationLink(
+      user.email, 
+      actionCodeSettings
+    );
+
+    // You could send this via email service here
+    // For now, we'll return the link (in production, send via email)
+
+    res.json({
+      success: true,
+      message: 'Verification email sent',
+      // Remove this in production
+      verificationLink: link
+    });
+
+  } catch (error) {
+    console.error('University verification error:', error);
+    res.status(500).json({ error: 'Failed to send verification email' });
+  }
+});
+
+/**
+ * POST /api/auth/confirm-university-verification
+ * Confirm university email verification
+ */
+router.post('/confirm-university-verification', auth, async (req, res) => {
+  try {
+    // Check if Firebase email is verified
+    const userRecord = await firebaseAuth.getUser(req.user.id);
+    
+    if (!userRecord.emailVerified) {
+      return res.status(400).json({ 
+        error: 'Email not verified',
+        message: 'Please verify your email first'
+      });
+    }
+
+    // Update university verification status
+    await db.collection('users').doc(req.user.id).update({
+      university_verified: true,
+      email_verified_at: admin.firestore.FieldValue.serverTimestamp(),
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({
+      success: true,
+      message: 'University email verified successfully'
+    });
+
+  } catch (error) {
+    console.error('Confirm verification error:', error);
+    res.status(500).json({ error: 'Failed to confirm verification' });
+  }
+});
+
+/**
+ * POST /api/auth/change-password
+ * Change user password
+ */
+router.post('/change-password', auth, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ 
+        error: 'Current password and new password required' 
+      });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ 
+        error: 'New password must be at least 6 characters long' 
+      });
+    }
+
+    // Update password in Firebase Auth
+    await firebaseAuth.updateUser(req.user.id, {
+      password: newPassword
+    });
+
+    // Update timestamp in Firestore
+    await db.collection('users').doc(req.user.id).update({
+      password_changed_at: admin.firestore.FieldValue.serverTimestamp(),
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({
+      success: true,
+      message: 'Password changed successfully'
+    });
+
+  } catch (error) {
+    console.error('Change password error:', error);
+    res.status(500).json({ error: 'Failed to change password' });
+  }
+});
+
+/**
+ * GET /api/auth/settings
+ * Get user notification settings
+ */
+router.get('/settings', auth, async (req, res) => {
+  try {
+    const settingsDoc = await db.collection('user_settings').doc(req.user.id).get();
+    
+    const defaultSettings = {
+      email_notifications: true,
+      project_updates: true,
+      bid_notifications: true,
+      message_notifications: true,
+      marketing_emails: false
+    };
+
+    const settings = settingsDoc.exists ? settingsDoc.data() : defaultSettings;
+
+    res.json({
+      success: true,
+      data: settings
+    });
+
+  } catch (error) {
+    console.error('Get settings error:', error);
+    res.status(500).json({ error: 'Failed to get settings' });
+  }
+});
+
+/**
+ * PUT /api/auth/notification-settings
+ * Update user notification settings
+ */
+router.put('/notification-settings', auth, async (req, res) => {
+  try {
+    const allowedSettings = [
+      'email_notifications',
+      'project_updates', 
+      'bid_notifications',
+      'message_notifications',
+      'marketing_emails'
+    ];
+
+    const updates = {};
+    for (const setting of allowedSettings) {
+      if (req.body[setting] !== undefined) {
+        updates[setting] = Boolean(req.body[setting]);
+      }
+    }
+
+    updates.updated_at = admin.firestore.FieldValue.serverTimestamp();
+
+    await db.collection('user_settings').doc(req.user.id).set(updates, { merge: true });
+
+    res.json({
+      success: true,
+      message: 'Notification settings updated successfully'
+    });
+
+  } catch (error) {
+    console.error('Update settings error:', error);
+    res.status(500).json({ error: 'Failed to update settings' });
+  }
+});
+
+/**
+ * DELETE /api/auth/account
+ * Delete user account
+ */
+router.delete('/account', auth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Delete from Firebase Auth
+    await firebaseAuth.deleteUser(userId);
+
+    // Delete user data from Firestore (implement proper cleanup)
+    const batch = db.batch();
+    
+    // Delete user profile
+    batch.delete(db.collection('users').doc(userId));
+    
+    // Delete user settings
+    batch.delete(db.collection('user_settings').doc(userId));
+    
+    // Note: In production, you'd want to handle related data cleanup
+    // (projects, bids, messages, etc.) more carefully
+    
+    await batch.commit();
+
+    res.json({
+      success: true,
+      message: 'Account deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete account error:', error);
+    res.status(500).json({ error: 'Failed to delete account' });
   }
 });
 
 /**
  * POST /api/auth/logout
- * Logout user (client-side token removal)
+ * Logout user (mainly for cleanup)
  */
-router.post('/logout', authenticateToken, (req, res) => {
-  // For JWT tokens, logout is handled client-side by removing the token
-  // TODO: Implement token blacklist for enhanced security
-  res.json({ message: 'Logout successful' });
+router.post('/logout', auth, async (req, res) => {
+  try {
+    // Update last logout time
+    await db.collection('users').doc(req.user.id).update({
+      last_logout: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({
+      success: true,
+      message: 'Logged out successfully'
+    });
+
+  } catch (error) {
+    console.error('Logout error:', error);
+    res.status(500).json({ error: 'Logout failed' });
+  }
 });
 
 module.exports = router;

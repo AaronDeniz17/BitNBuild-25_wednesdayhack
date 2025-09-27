@@ -1,18 +1,23 @@
-// Leaderboard page
-// Shows top performing students and teams
+// Leaderboard Page for GigCampus
+// Shows rankings of students by various metrics
 
 import { useState, useEffect } from 'react';
-import { 
+import { useQuery } from 'react-query';
+import {
   TrophyIcon,
   StarIcon,
+  BriefcaseIcon,
+  ClockIcon,
   CurrencyDollarIcon,
+  AcademicCapIcon,
   UserGroupIcon,
-  ChartBarIcon
+  FireIcon
 } from '@heroicons/react/24/outline';
 
 import Layout from '../components/Layout/Layout';
 import { useAuth } from '../contexts/AuthContext';
-import { formatCurrency } from '../lib/auth';
+import { leaderboardAPI } from '../lib/api';
+import { formatCurrency } from '../lib/utils';
 
 const LeaderboardPage = () => {
   const { user } = useAuth();

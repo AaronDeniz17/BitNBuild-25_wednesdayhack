@@ -1,265 +1,494 @@
-// Team routes for GigCampus
-// Handles team creation, management, and collaboration
+// Teams routes for GigCampus
+// Handles team creation, joining, management, and collaboration
 
 const express = require('express');
-const { admin } = require('../config/firebase');
-const { authenticateToken, requireRole, requireUniversityVerification } = require('../middleware/auth');
+const { v4: uuidv4 } = require('uuid');
+const { admin, db } = require('../config/firebase');
+const { auth, requireUniversityVerification, userRateLimit } = require('../middleware/auth');
 
 const router = express.Router();
 
+// Team role constants
+const TEAM_ROLES = {
+  OWNER: 'owner',
+  ADMIN: 'admin',
+  MEMBER: 'member'
+};
+
 /**
- * POST /api/teams
- * Create a new team (students only)
+ * GET /api/teams
+ * Get all public teams with filtering
  */
-router.post('/', authenticateToken, requireRole(['student']), requireUniversityVerification, async (req, res) => {
+router.get('/', auth, async (req, res) => {
   try {
-    const { name, description, skills } = req.body;
+    const { 
+      page = 1, 
+      limit = 10, 
+      skills, 
+      university, 
+      size_min, 
+      size_max,
+      search 
+    } = req.query;
 
-    if (!name) {
-      return res.status(400).json({ error: 'Team name is required' });
+    let query = db.collection('teams')
+      .where('is_public', '==', true)
+      .where('is_accepting_members', '==', true);
+
+    // Apply filters
+    if (university) {
+      query = query.where('university', '==', university);
     }
 
-    // Check if team name already exists
-    const existingTeamQuery = await admin.firestore()
-      .collection('teams')
-      .where('name', '==', name)
-      .get();
-
-    if (!existingTeamQuery.empty) {
-      return res.status(400).json({ error: 'Team name already exists' });
+    if (skills) {
+      const skillsArray = Array.isArray(skills) ? skills : [skills];
+      query = query.where('skills_needed', 'array-contains-any', skillsArray);
     }
 
-    // Create team
-    const teamData = {
-      id: admin.firestore().collection('teams').doc().id,
-      name,
-      leader_id: req.user.id,
-      member_ids: [req.user.id], // Leader is automatically a member
-      skills: skills || [],
-      team_wallet_balance: 0,
-      created_at: admin.firestore.FieldValue.serverTimestamp(),
-      is_active: true,
-      description: description || '',
-      portfolio_links: [],
-      reputation_score: 0,
-      completed_projects: 0
-    };
+    query = query.orderBy('created_at', 'desc');
 
-    await admin.firestore()
-      .collection('teams')
-      .doc(teamData.id)
-      .set(teamData);
+    // Pagination
+    const pageSize = Math.min(parseInt(limit), 50);
+    const offset = (parseInt(page) - 1) * pageSize;
+    
+    query = query.limit(pageSize).offset(offset);
 
-    res.status(201).json({
-      message: 'Team created successfully',
-      team: teamData
+    const snapshot = await query.get();
+    const teams = [];
+
+    for (const doc of snapshot.docs) {
+      const teamData = doc.data();
+      
+      // Text search filtering (simple implementation)
+      if (search) {
+        const searchTerm = search.toLowerCase();
+        const nameMatch = teamData.name?.toLowerCase().includes(searchTerm);
+        const descMatch = teamData.description?.toLowerCase().includes(searchTerm);
+        
+        if (!nameMatch && !descMatch) {
+          continue;
+        }
+      }
+
+      // Size filtering
+      const currentSize = teamData.member_count || 0;
+      if (size_min && currentSize < parseInt(size_min)) continue;
+      if (size_max && currentSize > parseInt(size_max)) continue;
+
+      // Get owner info
+      const ownerDoc = await db.collection('users').doc(teamData.owner_id).get();
+      const ownerData = ownerDoc.exists ? ownerDoc.data() : null;
+
+      teams.push({
+        id: doc.id,
+        ...teamData,
+        owner: ownerData ? {
+          id: ownerData.id,
+          name: ownerData.name,
+          university: ownerData.university,
+          university_verified: ownerData.university_verified
+        } : null
+      });
+    }
+
+    res.json({
+      success: true,
+      data: teams,
+      pagination: {
+        page: parseInt(page),
+        limit: pageSize,
+        total: teams.length // This is approximate for simplicity
+      }
     });
 
   } catch (error) {
-    console.error('Team creation error:', error);
-    res.status(500).json({ error: 'Failed to create team' });
+    console.error('Get teams error:', error);
+    res.status(500).json({ error: 'Failed to get teams' });
   }
 });
 
 /**
- * GET /api/teams
- * Get teams for current user or all teams
+ * GET /api/teams/my
+ * Get current user's teams
  */
-router.get('/', authenticateToken, async (req, res) => {
+router.get('/my', auth, async (req, res) => {
   try {
-    const { type = 'my' } = req.query;
-    const userId = req.user.id;
+    // Get teams where user is a member
+    const membershipSnapshot = await db.collection('team_members')
+      .where('user_id', '==', req.user.id)
+      .get();
 
-    let teams = [];
-
-    if (type === 'my') {
-      // Get teams where user is a member
-      const teamsSnapshot = await admin.firestore()
-        .collection('teams')
-        .where('member_ids', 'array-contains', userId)
-        .get();
-
-      teams = teamsSnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        created_at: doc.data().created_at?.toDate()
-      }));
-    } else if (type === 'all') {
-      // Get all active teams
-      const teamsSnapshot = await admin.firestore()
-        .collection('teams')
-        .where('is_active', '==', true)
-        .orderBy('reputation_score', 'desc')
-        .limit(20)
-        .get();
-
-      teams = teamsSnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        created_at: doc.data().created_at?.toDate()
-      }));
+    const teamIds = membershipSnapshot.docs.map(doc => doc.data().team_id);
+    
+    if (teamIds.length === 0) {
+      return res.json({
+        success: true,
+        data: []
+      });
     }
 
-    // Enrich team data with member information
-    const enrichedTeams = await Promise.all(
-      teams.map(async (team) => {
-        const memberPromises = team.member_ids.map(async (memberId) => {
-          const memberDoc = await admin.firestore()
-            .collection('users')
-            .doc(memberId)
-            .get();
-
-          if (memberDoc.exists) {
-            const memberData = memberDoc.data();
-            return {
-              id: memberData.id,
-              name: memberData.name,
-              email: memberData.email,
-              is_leader: memberId === team.leader_id
-            };
-          }
-          return null;
+    // Get team details
+    const teams = [];
+    
+    for (const teamId of teamIds) {
+      const teamDoc = await db.collection('teams').doc(teamId).get();
+      
+      if (teamDoc.exists) {
+        const teamData = teamDoc.data();
+        
+        // Get user's role in this team
+        const memberDoc = membershipSnapshot.docs.find(doc => doc.data().team_id === teamId);
+        const userRole = memberDoc ? memberDoc.data().role : 'member';
+        
+        teams.push({
+          id: teamId,
+          ...teamData,
+          user_role: userRole
         });
+      }
+    }
 
-        const members = (await Promise.all(memberPromises)).filter(Boolean);
-
-        return {
-          ...team,
-          members,
-          member_count: members.length
-        };
-      })
-    );
-
-    res.json({ teams: enrichedTeams });
+    res.json({
+      success: true,
+      data: teams
+    });
 
   } catch (error) {
-    console.error('Teams fetch error:', error);
-    res.status(500).json({ error: 'Failed to fetch teams' });
+    console.error('Get my teams error:', error);
+    res.status(500).json({ error: 'Failed to get your teams' });
   }
 });
 
 /**
  * GET /api/teams/:id
- * Get team details by ID
+ * Get specific team by ID
  */
-router.get('/:id', authenticateToken, async (req, res) => {
+router.get('/:id', auth, async (req, res) => {
   try {
-    const teamId = req.params.id;
-
-    const teamDoc = await admin.firestore()
-      .collection('teams')
-      .doc(teamId)
-      .get();
-
+    const { id } = req.params;
+    
+    const teamDoc = await db.collection('teams').doc(id).get();
+    
     if (!teamDoc.exists) {
       return res.status(404).json({ error: 'Team not found' });
     }
 
     const teamData = teamDoc.data();
 
-    // Get member details
-    const memberPromises = teamData.member_ids.map(async (memberId) => {
-      const memberDoc = await admin.firestore()
-        .collection('users')
-        .doc(memberId)
-        .get();
+    // Check if team is public or user is a member
+    const isMember = await checkTeamMembership(id, req.user.id);
+    
+    if (!teamData.is_public && !isMember) {
+      return res.status(403).json({ error: 'This team is private' });
+    }
 
-      if (memberDoc.exists) {
-        const memberData = memberDoc.data();
-        
-        // Get student profile if applicable
-        let studentProfile = null;
-        if (memberData.role === 'student') {
-          const studentDoc = await admin.firestore()
-            .collection('student_profiles')
-            .doc(memberId)
-            .get();
+    // Get team members
+    const membersSnapshot = await db.collection('team_members')
+      .where('team_id', '==', id)
+      .get();
 
-          if (studentDoc.exists) {
-            studentProfile = studentDoc.data();
-          }
-        }
+    const members = [];
+    
+    for (const doc of membersSnapshot.docs) {
+      const memberData = doc.data();
+      
+      // Get user info
+      const userDoc = await db.collection('users').doc(memberData.user_id).get();
+      const userData = userDoc.exists ? userDoc.data() : null;
 
-        return {
-          id: memberData.id,
-          name: memberData.name,
-          email: memberData.email,
-          is_leader: memberId === teamData.leader_id,
-          studentProfile: studentProfile ? {
-            skills: studentProfile.skills,
-            hourly_rate: studentProfile.hourly_rate,
-            reputation_score: studentProfile.reputation_score
-          } : null
-        };
+      if (userData) {
+        members.push({
+          id: memberData.user_id,
+          name: userData.name,
+          university: userData.university,
+          university_verified: userData.university_verified,
+          skills: userData.skills || [],
+          role: memberData.role,
+          joined_at: memberData.joined_at
+        });
       }
-      return null;
-    });
+    }
 
-    const members = (await Promise.all(memberPromises)).filter(Boolean);
+    // Get owner info
+    const ownerDoc = await db.collection('users').doc(teamData.owner_id).get();
+    const ownerData = ownerDoc.exists ? ownerDoc.data() : null;
+
+    // Get user's role if they're a member
+    const userRole = isMember ? 
+      members.find(m => m.id === req.user.id)?.role || 'member' : 
+      null;
+
+    const team = {
+      id,
+      ...teamData,
+      owner: ownerData ? {
+        id: ownerData.id,
+        name: ownerData.name,
+        university: ownerData.university,
+        university_verified: ownerData.university_verified
+      } : null,
+      members,
+      user_role: userRole,
+      is_member: isMember
+    };
 
     res.json({
-      team: {
-        id: teamDoc.id,
-        ...teamData,
-        created_at: teamData.created_at?.toDate(),
-        members,
-        member_count: members.length
-      }
+      success: true,
+      data: team
     });
 
   } catch (error) {
-    console.error('Team fetch error:', error);
-    res.status(500).json({ error: 'Failed to fetch team' });
+    console.error('Get team error:', error);
+    res.status(500).json({ error: 'Failed to get team' });
+  }
+});
+
+/**
+ * POST /api/teams
+ * Create a new team
+ */
+router.post('/', auth, requireUniversityVerification, userRateLimit(5, 60 * 60 * 1000), async (req, res) => {
+  try {
+    const {
+      name,
+      description,
+      skills_needed,
+      max_members = 10,
+      is_public = true,
+      university,
+      looking_for
+    } = req.body;
+
+    // Validate required fields
+    if (!name || !description) {
+      return res.status(400).json({ 
+        error: 'Missing required fields',
+        required: ['name', 'description']
+      });
+    }
+
+    // Validate name length
+    if (name.trim().length < 3) {
+      return res.status(400).json({ error: 'Team name must be at least 3 characters long' });
+    }
+
+    // Validate description length
+    if (description.trim().length < 10) {
+      return res.status(400).json({ error: 'Description must be at least 10 characters long' });
+    }
+
+    // Validate max members
+    if (max_members < 2 || max_members > 50) {
+      return res.status(400).json({ error: 'Max members must be between 2 and 50' });
+    }
+
+    // Check user's current team count
+    const currentTeamsSnapshot = await db.collection('team_members')
+      .where('user_id', '==', req.user.id)
+      .where('role', 'in', ['owner', 'admin'])
+      .get();
+
+    if (currentTeamsSnapshot.size >= 3) {
+      return res.status(400).json({ 
+        error: 'You can only own/admin up to 3 teams' 
+      });
+    }
+
+    const teamId = uuidv4();
+    
+    const newTeam = {
+      id: teamId,
+      owner_id: req.user.id,
+      name: name.trim(),
+      description: description.trim(),
+      skills_needed: skills_needed || [],
+      max_members: parseInt(max_members),
+      member_count: 1, // Owner is first member
+      is_public: Boolean(is_public),
+      is_accepting_members: true,
+      university: university || req.user.university,
+      looking_for: looking_for || '',
+      
+      // Metadata
+      created_at: admin.firestore.FieldValue.serverTimestamp(),
+      updated_at: admin.firestore.FieldValue.serverTimestamp(),
+      
+      // Stats
+      completed_projects: 0,
+      total_earnings: 0,
+      average_rating: 0
+    };
+
+    // Use transaction to ensure atomicity
+    await db.runTransaction(async (transaction) => {
+      // Create team
+      transaction.set(db.collection('teams').doc(teamId), newTeam);
+      
+      // Add owner as first member
+      const memberData = {
+        team_id: teamId,
+        user_id: req.user.id,
+        role: TEAM_ROLES.OWNER,
+        joined_at: admin.firestore.FieldValue.serverTimestamp()
+      };
+      
+      transaction.set(
+        db.collection('team_members').doc(`${teamId}_${req.user.id}`),
+        memberData
+      );
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Team created successfully',
+      data: { id: teamId, ...newTeam }
+    });
+
+  } catch (error) {
+    console.error('Create team error:', error);
+    res.status(500).json({ error: 'Failed to create team' });
+  }
+});
+
+/**
+ * PUT /api/teams/:id
+ * Update team (only by owner/admin)
+ */
+router.put('/:id', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body;
+    
+    // Check if user can update this team
+    const canUpdate = await checkTeamPermission(id, req.user.id, ['owner', 'admin']);
+    
+    if (!canUpdate) {
+      return res.status(403).json({ error: 'You can only update teams you own or admin' });
+    }
+
+    // Allowed fields to update
+    const allowedFields = [
+      'name', 'description', 'skills_needed', 'max_members',
+      'is_public', 'is_accepting_members', 'looking_for'
+    ];
+
+    const updateData = {};
+    for (const field of allowedFields) {
+      if (updates[field] !== undefined) {
+        if (field === 'name' && updates[field].trim().length < 3) {
+          return res.status(400).json({ error: 'Team name must be at least 3 characters long' });
+        }
+        if (field === 'description' && updates[field].trim().length < 10) {
+          return res.status(400).json({ error: 'Description must be at least 10 characters long' });
+        }
+        if (field === 'max_members') {
+          const maxMembers = parseInt(updates[field]);
+          if (maxMembers < 2 || maxMembers > 50) {
+            return res.status(400).json({ error: 'Max members must be between 2 and 50' });
+          }
+          updateData[field] = maxMembers;
+        } else {
+          updateData[field] = updates[field];
+        }
+      }
+    }
+
+    updateData.updated_at = admin.firestore.FieldValue.serverTimestamp();
+
+    await db.collection('teams').doc(id).update(updateData);
+
+    // Get updated team
+    const updatedTeamDoc = await db.collection('teams').doc(id).get();
+
+    res.json({
+      success: true,
+      message: 'Team updated successfully',
+      data: { id, ...updatedTeamDoc.data() }
+    });
+
+  } catch (error) {
+    console.error('Update team error:', error);
+    res.status(500).json({ error: 'Failed to update team' });
   }
 });
 
 /**
  * POST /api/teams/:id/join
- * Join a team (students only)
+ * Join a team
  */
-router.post('/:id/join', authenticateToken, requireRole(['student']), requireUniversityVerification, async (req, res) => {
+router.post('/:id/join', auth, requireUniversityVerification, async (req, res) => {
   try {
-    const teamId = req.params.id;
+    const { id } = req.params;
+    const { message } = req.body;
 
-    const teamDoc = await admin.firestore()
-      .collection('teams')
-      .doc(teamId)
-      .get();
-
+    const teamDoc = await db.collection('teams').doc(id).get();
+    
     if (!teamDoc.exists) {
       return res.status(404).json({ error: 'Team not found' });
     }
 
-    const teamData = teamDoc.data();
+    const team = teamDoc.data();
 
-    // Check if team is active
-    if (!teamData.is_active) {
-      return res.status(400).json({ error: 'Team is not active' });
+    // Check if team is accepting members
+    if (!team.is_accepting_members) {
+      return res.status(400).json({ error: 'Team is not accepting new members' });
+    }
+
+    // Check if team is full
+    if (team.member_count >= team.max_members) {
+      return res.status(400).json({ error: 'Team is full' });
     }
 
     // Check if user is already a member
-    if (teamData.member_ids.includes(req.user.id)) {
+    const existingMember = await db.collection('team_members')
+      .doc(`${id}_${req.user.id}`)
+      .get();
+
+    if (existingMember.exists) {
       return res.status(400).json({ error: 'You are already a member of this team' });
     }
 
-    // Check team size limit (max 10 members for MVP)
-    if (teamData.member_ids.length >= 10) {
-      return res.status(400).json({ error: 'Team is at maximum capacity' });
+    // Check user's current team count
+    const currentTeamsSnapshot = await db.collection('team_members')
+      .where('user_id', '==', req.user.id)
+      .get();
+
+    if (currentTeamsSnapshot.size >= 5) {
+      return res.status(400).json({ 
+        error: 'You can only be a member of up to 5 teams' 
+      });
     }
 
-    // Add user to team
-    await admin.firestore()
-      .collection('teams')
-      .doc(teamId)
-      .update({
-        member_ids: admin.firestore.FieldValue.arrayUnion(req.user.id)
+    // Use transaction to ensure atomicity
+    await db.runTransaction(async (transaction) => {
+      // Add user as team member
+      const memberData = {
+        team_id: id,
+        user_id: req.user.id,
+        role: TEAM_ROLES.MEMBER,
+        joined_at: admin.firestore.FieldValue.serverTimestamp(),
+        join_message: message || ''
+      };
+      
+      transaction.set(
+        db.collection('team_members').doc(`${id}_${req.user.id}`),
+        memberData
+      );
+      
+      // Update team member count
+      transaction.update(db.collection('teams').doc(id), {
+        member_count: admin.firestore.FieldValue.increment(1),
+        updated_at: admin.firestore.FieldValue.serverTimestamp()
       });
+    });
 
-    res.json({ message: 'Successfully joined team' });
+    res.json({
+      success: true,
+      message: 'Successfully joined the team'
+    });
 
   } catch (error) {
-    console.error('Team join error:', error);
+    console.error('Join team error:', error);
     res.status(500).json({ error: 'Failed to join team' });
   }
 });
@@ -268,200 +497,192 @@ router.post('/:id/join', authenticateToken, requireRole(['student']), requireUni
  * POST /api/teams/:id/leave
  * Leave a team
  */
-router.post('/:id/leave', authenticateToken, async (req, res) => {
+router.post('/:id/leave', auth, async (req, res) => {
   try {
-    const teamId = req.params.id;
-
-    const teamDoc = await admin.firestore()
-      .collection('teams')
-      .doc(teamId)
-      .get();
-
-    if (!teamDoc.exists) {
-      return res.status(404).json({ error: 'Team not found' });
-    }
-
-    const teamData = teamDoc.data();
+    const { id } = req.params;
 
     // Check if user is a member
-    if (!teamData.member_ids.includes(req.user.id)) {
+    const memberDoc = await db.collection('team_members')
+      .doc(`${id}_${req.user.id}`)
+      .get();
+
+    if (!memberDoc.exists) {
       return res.status(400).json({ error: 'You are not a member of this team' });
     }
 
-    // Check if user is the leader
-    if (teamData.leader_id === req.user.id) {
-      return res.status(400).json({ error: 'Team leader cannot leave. Transfer leadership first.' });
+    const memberData = memberDoc.data();
+
+    // Owner cannot leave (must transfer ownership first)
+    if (memberData.role === TEAM_ROLES.OWNER) {
+      return res.status(400).json({ 
+        error: 'Team owner cannot leave. Transfer ownership first or delete the team.' 
+      });
     }
 
-    // Remove user from team
-    await admin.firestore()
-      .collection('teams')
-      .doc(teamId)
-      .update({
-        member_ids: admin.firestore.FieldValue.arrayRemove(req.user.id)
+    // Use transaction to ensure atomicity
+    await db.runTransaction(async (transaction) => {
+      // Remove user from team
+      transaction.delete(db.collection('team_members').doc(`${id}_${req.user.id}`));
+      
+      // Update team member count
+      transaction.update(db.collection('teams').doc(id), {
+        member_count: admin.firestore.FieldValue.increment(-1),
+        updated_at: admin.firestore.FieldValue.serverTimestamp()
       });
+    });
 
-    res.json({ message: 'Successfully left team' });
+    res.json({
+      success: true,
+      message: 'Successfully left the team'
+    });
 
   } catch (error) {
-    console.error('Team leave error:', error);
+    console.error('Leave team error:', error);
     res.status(500).json({ error: 'Failed to leave team' });
   }
 });
 
 /**
- * PUT /api/teams/:id/transfer-leadership
- * Transfer team leadership (current leader only)
+ * POST /api/teams/:id/remove-member
+ * Remove a member from team (only by owner/admin)
  */
-router.put('/:id/transfer-leadership', authenticateToken, async (req, res) => {
+router.post('/:id/remove-member', auth, async (req, res) => {
   try {
-    const teamId = req.params.id;
-    const { new_leader_id } = req.body;
+    const { id } = req.params;
+    const { user_id } = req.body;
 
-    if (!new_leader_id) {
-      return res.status(400).json({ error: 'New leader ID is required' });
+    if (!user_id) {
+      return res.status(400).json({ error: 'User ID is required' });
     }
 
-    const teamDoc = await admin.firestore()
-      .collection('teams')
-      .doc(teamId)
+    // Check if current user can remove members
+    const canRemove = await checkTeamPermission(id, req.user.id, ['owner', 'admin']);
+    
+    if (!canRemove) {
+      return res.status(403).json({ error: 'You can only remove members from teams you own or admin' });
+    }
+
+    // Cannot remove yourself
+    if (user_id === req.user.id) {
+      return res.status(400).json({ error: 'Cannot remove yourself. Use leave endpoint instead.' });
+    }
+
+    // Check if target user is a member
+    const memberDoc = await db.collection('team_members')
+      .doc(`${id}_${user_id}`)
       .get();
 
-    if (!teamDoc.exists) {
-      return res.status(404).json({ error: 'Team not found' });
+    if (!memberDoc.exists) {
+      return res.status(400).json({ error: 'User is not a member of this team' });
     }
 
-    const teamData = teamDoc.data();
+    const memberData = memberDoc.data();
 
-    // Check if user is the current leader
-    if (teamData.leader_id !== req.user.id) {
-      return res.status(403).json({ error: 'Only the team leader can transfer leadership' });
+    // Cannot remove owner
+    if (memberData.role === TEAM_ROLES.OWNER) {
+      return res.status(400).json({ error: 'Cannot remove team owner' });
     }
 
-    // Check if new leader is a team member
-    if (!teamData.member_ids.includes(new_leader_id)) {
-      return res.status(400).json({ error: 'New leader must be a team member' });
+    // Only owner can remove admins
+    if (memberData.role === TEAM_ROLES.ADMIN) {
+      const isOwner = await checkTeamPermission(id, req.user.id, ['owner']);
+      if (!isOwner) {
+        return res.status(403).json({ error: 'Only team owner can remove admins' });
+      }
     }
 
-    // Transfer leadership
-    await admin.firestore()
-      .collection('teams')
-      .doc(teamId)
-      .update({
-        leader_id: new_leader_id
-      });
-
-    res.json({ message: 'Leadership transferred successfully' });
-
-  } catch (error) {
-    console.error('Leadership transfer error:', error);
-    res.status(500).json({ error: 'Failed to transfer leadership' });
-  }
-});
-
-/**
- * PUT /api/teams/:id/update
- * Update team information (leader only)
- */
-router.put('/:id/update', authenticateToken, async (req, res) => {
-  try {
-    const teamId = req.params.id;
-    const updates = req.body;
-
-    const teamDoc = await admin.firestore()
-      .collection('teams')
-      .doc(teamId)
-      .get();
-
-    if (!teamDoc.exists) {
-      return res.status(404).json({ error: 'Team not found' });
-    }
-
-    const teamData = teamDoc.data();
-
-    // Check if user is the team leader
-    if (teamData.leader_id !== req.user.id) {
-      return res.status(403).json({ error: 'Only the team leader can update team information' });
-    }
-
-    // Remove fields that shouldn't be updated
-    delete updates.id;
-    delete updates.leader_id;
-    delete updates.member_ids;
-    delete updates.created_at;
-
-    // Update team
-    await admin.firestore()
-      .collection('teams')
-      .doc(teamId)
-      .update({
-        ...updates,
+    // Use transaction to ensure atomicity
+    await db.runTransaction(async (transaction) => {
+      // Remove user from team
+      transaction.delete(db.collection('team_members').doc(`${id}_${user_id}`));
+      
+      // Update team member count
+      transaction.update(db.collection('teams').doc(id), {
+        member_count: admin.firestore.FieldValue.increment(-1),
         updated_at: admin.firestore.FieldValue.serverTimestamp()
-      });
-
-    res.json({ message: 'Team updated successfully' });
-
-  } catch (error) {
-    console.error('Team update error:', error);
-    res.status(500).json({ error: 'Failed to update team' });
-  }
-});
-
-/**
- * GET /api/teams/:id/wallet
- * Get team wallet information (members only)
- */
-router.get('/:id/wallet', authenticateToken, async (req, res) => {
-  try {
-    const teamId = req.params.id;
-
-    const teamDoc = await admin.firestore()
-      .collection('teams')
-      .doc(teamId)
-      .get();
-
-    if (!teamDoc.exists) {
-      return res.status(404).json({ error: 'Team not found' });
-    }
-
-    const teamData = teamDoc.data();
-
-    // Check if user is a team member
-    if (!teamData.member_ids.includes(req.user.id)) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    // Get team transactions
-    const transactionsSnapshot = await admin.firestore()
-      .collection('transactions')
-      .where('to_id', '==', teamId)
-      .orderBy('created_at', 'desc')
-      .limit(20)
-      .get();
-
-    const transactions = [];
-    transactionsSnapshot.forEach(doc => {
-      transactions.push({
-        id: doc.id,
-        ...doc.data(),
-        created_at: doc.data().created_at?.toDate(),
-        processed_at: doc.data().processed_at?.toDate()
       });
     });
 
     res.json({
-      team_wallet: {
-        balance: teamData.team_wallet_balance,
-        team_id: teamId,
-        team_name: teamData.name
-      },
-      transactions
+      success: true,
+      message: 'Member removed successfully'
     });
 
   } catch (error) {
-    console.error('Team wallet fetch error:', error);
-    res.status(500).json({ error: 'Failed to fetch team wallet' });
+    console.error('Remove member error:', error);
+    res.status(500).json({ error: 'Failed to remove member' });
   }
 });
+
+/**
+ * DELETE /api/teams/:id
+ * Delete team (only by owner)
+ */
+router.delete('/:id', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check if user is the owner
+    const isOwner = await checkTeamPermission(id, req.user.id, ['owner']);
+    
+    if (!isOwner) {
+      return res.status(403).json({ error: 'Only team owner can delete the team' });
+    }
+
+    // Delete team and all related data
+    const batch = db.batch();
+    
+    // Delete team
+    batch.delete(db.collection('teams').doc(id));
+    
+    // Delete all team members
+    const membersSnapshot = await db.collection('team_members')
+      .where('team_id', '==', id)
+      .get();
+    
+    membersSnapshot.docs.forEach(doc => {
+      batch.delete(doc.ref);
+    });
+
+    await batch.commit();
+
+    res.json({
+      success: true,
+      message: 'Team deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete team error:', error);
+    res.status(500).json({ error: 'Failed to delete team' });
+  }
+});
+
+// Helper function to check team membership
+async function checkTeamMembership(teamId, userId) {
+  try {
+    const memberDoc = await db.collection('team_members')
+      .doc(`${teamId}_${userId}`)
+      .get();
+    return memberDoc.exists;
+  } catch (error) {
+    return false;
+  }
+}
+
+// Helper function to check team permissions
+async function checkTeamPermission(teamId, userId, allowedRoles) {
+  try {
+    const memberDoc = await db.collection('team_members')
+      .doc(`${teamId}_${userId}`)
+      .get();
+    
+    if (!memberDoc.exists) return false;
+    
+    const memberData = memberDoc.data();
+    return allowedRoles.includes(memberData.role);
+  } catch (error) {
+    return false;
+  }
+}
 
 module.exports = router;
