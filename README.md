@@ -64,6 +64,7 @@ cp env.example .env
 
 # Edit .env with your Firebase credentials
 # Get these from Firebase Console > Project Settings > Service Accounts
+# IMPORTANT: Never commit the .env file to version control!
 ```
 
 ### 3. Frontend Setup
@@ -71,16 +72,22 @@ cp env.example .env
 cd client
 npm install
 
-# Create environment file
-echo "NEXT_PUBLIC_API_URL=http://localhost:5000/api" > .env.local
+# Copy environment variables
+cp env.local.example .env.local
+
+# Edit .env.local with your Firebase client credentials
+# Get these from Firebase Console > Project Settings > General > Your apps
+# IMPORTANT: Never commit the .env.local file to version control!
 ```
 
 ### 4. Firebase Configuration
 1. Create a Firebase project at https://console.firebase.google.com
 2. Enable Firestore Database
 3. Enable Authentication (Email/Password)
-4. Download service account key
-5. Update `server/config/firebase.js` with your credentials
+4. **Server-side credentials**: Download service account key from Project Settings > Service Accounts
+5. **Client-side credentials**: Get config from Project Settings > General > Your apps
+6. Update your `.env` and `.env.local` files with the credentials
+7. **NEVER commit these files to version control!**
 
 ### 5. Run Development Servers
 ```bash
@@ -221,6 +228,9 @@ Built with Tailwind CSS and custom components:
 - Input validation
 - CORS protection
 - Helmet security headers
+- **Environment variable protection** - No hardcoded credentials
+- **Git protection** - `.gitignore` prevents credential commits
+- **Runtime validation** - Checks for required environment variables
 
 ## 📊 Database Schema
 
