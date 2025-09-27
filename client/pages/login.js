@@ -4,7 +4,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { EyeIcon, EyeSlashIcon } from '@heroicons/react/outline';
+import { EyeIcon, EyeSlashIcon } from '@heroicons/react/24/outline';
 
 import Layout from '../components/Layout/Layout';
 import { useAuth } from '../contexts/AuthContext';

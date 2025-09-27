@@ -12,7 +12,7 @@ import {
   UserGroupIcon,
   CheckCircleIcon,
   ExclamationTriangleIcon
-} from '@heroicons/react/outline';
+} from '@heroicons/react/24/outline';
 
 import Layout from '../../components/Layout/Layout';
 import { useAuth } from '../../contexts/AuthContext';

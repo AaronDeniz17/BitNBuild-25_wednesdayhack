@@ -8,14 +8,14 @@ import {
   BellIcon, 
   UserCircleIcon, 
   CogIcon, 
-  LogoutIcon,
-  MenuIcon,
-  XIcon,
+  ArrowRightOnRectangleIcon as LogoutIcon,
+  Bars3Icon as MenuIcon,
+  XMarkIcon as XIcon,
   HomeIcon,
   BriefcaseIcon,
   UserGroupIcon,
   ChartBarIcon
-} from '@heroicons/react/outline';
+} from '@heroicons/react/24/outline';
 
 import { useAuth } from '../../contexts/AuthContext';
 import { getUserDisplayName, getUserRoleDisplay } from '../../lib/auth';

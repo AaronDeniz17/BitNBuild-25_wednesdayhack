@@ -10,10 +10,18 @@
     "build": "cd client && npm run build",
     "start": "cd server && npm start"
   },
-  "keywords": ["freelancer", "student", "platform", "mvp"],
+  "keywords": [
+    "freelancer",
+    "student",
+    "platform",
+    "mvp"
+  ],
   "author": "GigCampus Team",
   "license": "MIT",
   "devDependencies": {
     "concurrently": "^8.2.2"
+  },
+  "dependencies": {
+    "firebase": "^12.3.0"
   }
 }
