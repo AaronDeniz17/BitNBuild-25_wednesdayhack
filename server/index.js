@@ -12,7 +12,7 @@ const { db } = require('./config/firebase');
 
 // Import route handlers
 const authRoutes = require('./routes/auth');
-const projectRoutes = require('./routes/projects');
+const projectRoutes = require('./routes/test-projects'); // Using test route temporarily
 const bidRoutes = require('./routes/bids');
 const contractRoutes = require('./routes/contracts');
 const milestoneRoutes = require('./routes/milestones');
@@ -23,11 +23,7 @@ const adminRoutes = require('./routes/admin');
 const chatRoutes = require('./routes/chat');
 const leaderboardRoutes = require('./routes/leaderboard');
 const notificationRoutes = require('./routes/notifications');
-<<<<<<< Updated upstream
 const analyticsRoutes = require('./routes/analytics');
-=======
-const analysisRoutes = require('./routes/analysis');
->>>>>>> Stashed changes
 
 const app = express();
 const DEFAULT_PORT = 5001;
@@ -103,20 +99,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/leaderboard', leaderboardRoutes);
 app.use('/api/notifications', notificationRoutes);
-<<<<<<< Updated upstream
 app.use('/api/analytics', analyticsRoutes);
-=======
-app.use('/api/analysis', analysisRoutes);
->>>>>>> Stashed changes
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error('Error:', err);
-  res.status(500).json({
-    error: 'Internal server error',
-    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
-  });
-});
 
 // 404 handler
 app.use((req, res) => {
@@ -159,16 +142,6 @@ const findAvailablePort = async (startPort) => {
   }
   return port;
 };
-
-// Start server
-// 404 handler
-app.use('*', (req, res) => {
-  res.status(404).json({ 
-    success: false,
-    error: 'Route not found',
-    message: `Cannot ${req.method} ${req.url}`
-  });
-});
 
 // Start server with retries
 const startServer = (port = DEFAULT_PORT, attempt = 1) => {

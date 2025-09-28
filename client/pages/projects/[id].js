@@ -1,175 +1,239 @@
-// Project Detail Page with Bid Modal for GigCampus
-// Shows project details and allows students to submit bids
+// Enhanced Project Details page with escrow, chat, milestones, and team management
+// Supports project viewing, bidding, escrow management, and real-time chat
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
-import Link from 'next/link';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
-import { toast } from 'react-hot-toast';
-import { Dialog, Transition } from '@headlessui/react';
-import { Fragment } from 'react';
-import {
-  CalendarIcon,
-  CurrencyDollarIcon,
-  ClockIcon,
-  UserGroupIcon,
-  TagIcon,
-  XMarkIcon,
-  PaperAirplaneIcon,
-  StarIcon,
-  BriefcaseIcon,
-  ExclamationTriangleIcon,
-  ChevronLeftIcon
-} from '@heroicons/react/24/outline';
-
-import Layout from '../../components/Layout/Layout';
 import { useAuth } from '../../contexts/AuthContext';
-import { projectsAPI, bidsAPI, chatAPI } from '../../lib/api';
-import { formatCurrency, formatDate, getRelativeTime } from '../../lib/utils';
+import Layout from '../../components/Layout/Layout';
+import Chat from '../../components/Chat';
+import toast from 'react-hot-toast';
 
-const ProjectDetailPage = () => {
+const ProjectDetails = () => {
   const router = useRouter();
   const { id } = router.query;
   const { user } = useAuth();
-  const queryClient = useQueryClient();
-  
-  const [isBidModalOpen, setIsBidModalOpen] = useState(false);
+  const [project, setProject] = useState(null);
+  const [bids, setBids] = useState([]);
+  const [milestones, setMilestones] = useState([]);
+  const [escrowBalance, setEscrowBalance] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('overview');
+  const [showBidForm, setShowBidForm] = useState(false);
+  const [showChat, setShowChat] = useState(false);
   const [bidData, setBidData] = useState({
     price: '',
     eta_days: '',
-    proposal: '',
-    portfolio_links: [''],
+    pitch: '',
+    portfolio_url: '',
     message: ''
   });
 
-  // Fetch project details using React Query
-  const { data: projectData, isLoading: loading, error } = useQuery(
-    ['project', id],
-    () => projectsAPI.getProject(id),
-    {
-      enabled: !!id,
-      retry: 2,
-      onError: (error) => {
-        console.error('Error fetching project details:', error);
-        toast.error(error.message || 'Failed to load project details');
-      },
-      onSuccess: (data) => {
-        console.log('Project data fetched successfully:', data);
-      }
-    }
-  );
-
-  // Handle error state
   useEffect(() => {
-    if (error) {
-      console.error('Error fetching project:', error);
-      toast.error('Failed to load project details');
+    if (id) {
+      fetchProject();
+      fetchBids();
+      fetchEscrowBalance();
     }
-  }, [error]);
+  }, [id]);
 
-  // Get project, client, and bids from the response
-  const project = projectData?.data?.data?.project;
-  const client = projectData?.data?.data?.client;
-  const bids = projectData?.data?.data?.bids || [];
-
-  // Bid submission mutation
-  const bidMutation = useMutation(
-    (bidPayload) => bidsAPI.createBid(bidPayload),
-    {
-      onSuccess: () => {
-        toast.success('Bid submitted successfully!');
-        setIsBidModalOpen(false);
-        setBidData({
-          price: '',
-          proposal: '',
-          eta_days: '',
-          portfolio_links: [''],
-          message: ''
-        });
-        // Invalidate project query to refetch
-        queryClient.invalidateQueries(['project', id]);
-      },
-      onError: (error) => {
-        console.error('Bid submission error:', error);
-        toast.error('Failed to submit bid. Please try again.');
+  const fetchProject = async () => {
+    try {
+      console.log('Fetching project with ID:', id);
+      const response = await fetch(`/api/projects/${id}`);
+      console.log('Response status:', response.status);
+      
+      const data = await response.json();
+      console.log('Response data:', data);
+      
+      if (data.success) {
+        setProject(data.data);
+        // Set milestones from project data
+        if (data.data.milestones) {
+          setMilestones(data.data.milestones);
+        }
+      } else {
+        throw new Error(data.error || 'Failed to load project');
       }
+    } catch (error) {
+      console.error('Failed to fetch project:', error);
+      toast.error('Failed to load project');
+    } finally {
+      setLoading(false);
     }
-  );
+  };
 
-  const handleBidSubmit = async (e) => {
+  const fetchBids = async () => {
+    try {
+      const response = await fetch(`/api/projects/${id}/bids`);
+      const data = await response.json();
+      if (data.success) {
+        setBids(data.data);
+      } else {
+        console.warn('Failed to fetch bids:', data.error);
+      }
+    } catch (error) {
+      console.error('Failed to fetch bids:', error);
+    }
+  };
+
+
+  const fetchEscrowBalance = async () => {
+    try {
+      const response = await fetch(`/api/projects/${id}/escrow/balance`);
+      const data = await response.json();
+      if (data.success) {
+        setEscrowBalance(data.escrowBalance || 0);
+      } else {
+        console.warn('Failed to fetch escrow balance:', data.error);
+      }
+    } catch (error) {
+      console.error('Failed to fetch escrow balance:', error);
+    }
+  };
+
+  const handleSubmitBid = async (e) => {
     e.preventDefault();
-    
-    if (!user || user.role !== 'student') {
-      toast.error('Only students can submit bids');
-      return;
-    }
-
-    if (!bidData.price || !bidData.proposal || !bidData.eta_days) {
+    if (!bidData.price || !bidData.eta_days || !bidData.pitch) {
       toast.error('Please fill in all required fields');
       return;
     }
 
-    if (parseFloat(bidData.price) <= 0) {
-      toast.error('Bid amount must be greater than 0');
-      return;
-    }
-
-    const bidPayload = {
-      project_id: id,
-      price: parseFloat(bidData.price),
-      proposal: bidData.proposal,
-      eta_days: parseInt(bidData.eta_days),
-      portfolio_links: bidData.portfolio_links.filter(link => link.trim()),
-      message: bidData.message
-    };
-
-    bidMutation.mutate(bidPayload);
-  };
-
-  const handleContactClient = async () => {
-    if (!user || !project?.client_id) {
-      toast.error('Unable to start conversation');
-      return;
-    }
-
     try {
-      const response = await chatAPI.createConversation(project.client_id);
-      if (response.data) {
-        router.push('/chat');
-        toast.success('Conversation started!');
+      const response = await fetch('/api/bids', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          project_id: id,
+          proposer_type: 'user',
+          proposer_id: user.id,
+          ...bidData
+        }),
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        toast.success('Proposal submitted successfully!');
+        setShowBidForm(false);
+        setBidData({ price: '', eta_days: '', pitch: '', portfolio_url: '', message: '' });
+        fetchBids();
+      } else {
+        throw new Error(data.error || 'Failed to submit proposal');
       }
     } catch (error) {
-      toast.error('Failed to start conversation');
+      toast.error(error.message);
     }
   };
 
-  const handlePortfolioLinkChange = (index, value) => {
-    setBidData(prev => ({
-      ...prev,
-      portfolio_links: prev.portfolio_links.map((link, i) => 
-        i === index ? value : link
-      )
-    }));
+  const handleAcceptBid = async (bidId) => {
+    if (!confirm('Are you sure you want to accept this proposal?')) return;
+
+    try {
+      const response = await fetch(`/api/bids/${bidId}/accept`, {
+        method: 'PUT',
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        toast.success('Proposal accepted successfully!');
+        fetchBids();
+        fetchProject();
+      } else {
+        throw new Error(data.error || 'Failed to accept proposal');
+      }
+    } catch (error) {
+      toast.error(error.message);
+    }
   };
 
-  const addPortfolioLink = () => {
-    setBidData(prev => ({
-      ...prev,
-      portfolio_links: [...prev.portfolio_links, '']
-    }));
+  const handleRejectBid = async (bidId) => {
+    if (!confirm('Are you sure you want to reject this proposal?')) return;
+
+    try {
+      const response = await fetch(`/api/bids/${bidId}/reject`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ reason: 'Not selected' }),
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        toast.success('Proposal rejected');
+        fetchBids();
+      } else {
+        throw new Error(data.error || 'Failed to reject proposal');
+      }
+    } catch (error) {
+      toast.error(error.message);
+    }
   };
 
-  const removePortfolioLink = (index) => {
-    setBidData(prev => ({
-      ...prev,
-      portfolio_links: prev.portfolio_links.filter((_, i) => i !== index)
-    }));
+  const handleDepositEscrow = async (amount) => {
+    try {
+      const response = await fetch(`/api/projects/${id}/escrow/deposit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ amount: parseFloat(amount) }),
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        toast.success('Funds deposited to escrow!');
+        fetchEscrowBalance();
+      } else {
+        throw new Error(data.error || 'Failed to deposit funds');
+      }
+    } catch (error) {
+      toast.error(error.message);
+    }
+  };
+
+  const handleApproveMilestone = async (milestoneId) => {
+    try {
+      const response = await fetch(`/api/projects/${id}/milestones/${milestoneId}/approve`, {
+        method: 'POST',
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        toast.success('Milestone approved!');
+        fetchMilestones();
+      } else {
+        throw new Error(data.error || 'Failed to approve milestone');
+      }
+    } catch (error) {
+      toast.error(error.message);
+    }
+  };
+
+  const handleReleaseMilestone = async (milestoneId) => {
+    try {
+      const response = await fetch(`/api/projects/${id}/milestones/${milestoneId}/release`, {
+        method: 'POST',
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        toast.success('Milestone funds released!');
+        fetchMilestones();
+        fetchEscrowBalance();
+      } else {
+        throw new Error(data.error || 'Failed to release funds');
+      }
+    } catch (error) {
+      toast.error(error.message);
+    }
   };
 
   if (loading) {
     return (
       <Layout>
-        <div className="min-h-screen flex items-center justify-center">
+        <div className="flex justify-center items-center h-64">
           <div className="loading-spinner-lg"></div>
         </div>
       </Layout>
@@ -179,404 +243,613 @@ const ProjectDetailPage = () => {
   if (!project) {
     return (
       <Layout>
-        <div className="min-h-screen flex items-center justify-center">
-          <div className="text-center">
-            <h2 className="text-2xl font-bold text-gray-900 mb-4">Project Not Found</h2>
-            <p className="text-gray-600 mb-4">The project you're looking for doesn't exist.</p>
-            <Link href="/projects" className="btn-primary">Browse Projects</Link>
+        <div className="max-w-4xl mx-auto p-6">
+          <div className="text-center py-12">
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">
+              Project Not Found
+            </h1>
+            <p className="text-gray-600 dark:text-gray-400 mb-6">
+              The project you're looking for doesn't exist or has been removed.
+            </p>
+            <button
+              onClick={() => router.push('/projects')}
+              className="btn btn-primary"
+            >
+              Browse Projects
+            </button>
           </div>
         </div>
       </Layout>
     );
   }
 
-  const canBid = user && user.role === 'student' && project.status === 'open' && 
-                 !bids.some(bid => bid.freelancer_id === user.id);
-
-  const userBid = bids.find(bid => bid.freelancer_id === user.id);
+  const isOwner = project.client_id === user?.id;
+  const canBid = user?.role === 'student' && project.status === 'open' && !isOwner;
 
   return (
     <Layout>
-      <div className="min-h-screen bg-gray-50 py-8">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-          {/* Header */}
-          <div className="mb-6">
-            <button
-              onClick={() => router.back()}
-              className="flex items-center text-gray-600 hover:text-gray-900 mb-4"
-            >
-              <ChevronLeftIcon className="h-5 w-5 mr-1" />
-              Back to Projects
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            {/* Main Content */}
-            <div className="lg:col-span-2 space-y-6">
+      <div className="max-w-6xl mx-auto p-6">
               {/* Project Header */}
-              <div className="card p-6">
+        <div className="mb-8">
                 <div className="flex items-start justify-between mb-4">
                   <div>
-                    <h1 className="text-2xl font-bold text-gray-900 mb-2">
+              <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
                       {project.title}
                     </h1>
-                    <div className="flex items-center space-x-4 text-sm text-gray-600">
-                      <span className="flex items-center">
-                        <CalendarIcon className="h-4 w-4 mr-1" />
-                        Posted {getRelativeTime(project.created_at)}
+              <div className="flex items-center space-x-4 text-sm text-gray-500 dark:text-gray-400">
+                <span>By {project.client?.name || 'Unknown'}</span>
+                <span>•</span>
+                <span>{new Date(project.created_at?.toDate?.() || project.created_at).toLocaleDateString()}</span>
+                <span>•</span>
+                <span className={`badge ${
+                  project.status === 'open' ? 'badge-success' :
+                  project.status === 'in_progress' ? 'badge-warning' :
+                  project.status === 'completed' ? 'badge-primary' : 'badge-error'
+                }`}>
+                  {project.status.replace('_', ' ')}
                       </span>
-                      <span className="flex items-center">
-                        <BriefcaseIcon className="h-4 w-4 mr-1" />
-                        {project.category?.replace('-', ' ')}
-                      </span>
-                      <span className={`px-2 py-1 rounded-full text-xs ${
-                        project.urgency === 'high' ? 'bg-red-100 text-red-800' :
-                        project.urgency === 'medium' ? 'bg-yellow-100 text-yellow-800' :
-                        'bg-green-100 text-green-800'
-                      }`}>
-                        {project.urgency} priority
-                      </span>
+              </div>
+            </div>
+            <div className="flex space-x-3">
+              {isOwner && (
+                <button
+                  onClick={() => setShowChat(true)}
+                  className="btn btn-secondary"
+                >
+                  💬 Chat
+                </button>
+              )}
+              {canBid && (
+                <button
+                  onClick={() => setShowBidForm(true)}
+                  className="btn btn-primary"
+                >
+                  Submit Proposal
+                </button>
+              )}
                     </div>
                   </div>
                   
-                  <div className="text-right">
-                    <div className="text-2xl font-bold text-primary-600">
-                      {formatCurrency(project.budget)}
+          {/* Project Stats */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+            <div className="card">
+              <div className="card-body text-center">
+                <div className="text-2xl font-bold text-gray-900 dark:text-white">
+                  ${project.budget_min || project.budget_max || 0}
+                </div>
+                <div className="text-sm text-gray-500 dark:text-gray-400">Budget</div>
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-body text-center">
+                <div className="text-2xl font-bold text-gray-900 dark:text-white">
+                  {project.bid_count || 0}
+                </div>
+                <div className="text-sm text-gray-500 dark:text-gray-400">Proposals</div>
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-body text-center">
+                <div className="text-2xl font-bold text-gray-900 dark:text-white">
+                  ${escrowBalance}
+                </div>
+                <div className="text-sm text-gray-500 dark:text-gray-400">Escrow</div>
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-body text-center">
+                <div className="text-2xl font-bold text-gray-900 dark:text-white">
+                  {milestones.length}
+                </div>
+                <div className="text-sm text-gray-500 dark:text-gray-400">Milestones</div>
                     </div>
-                    <div className="text-sm text-gray-600">
-                      Fixed Price
                     </div>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                  <div className="text-center p-3 bg-gray-50 rounded-lg">
-                    <ClockIcon className="h-6 w-6 text-gray-600 mx-auto mb-1" />
-                    <div className="text-sm text-gray-600">Deadline</div>
-                    <div className="font-medium">{formatDate(project.deadline)}</div>
+        {/* Tab Navigation */}
+        <div className="mb-6">
+          <div className="border-b border-gray-200 dark:border-gray-700">
+            <nav className="-mb-px flex space-x-8">
+              {[
+                { id: 'overview', label: 'Overview' },
+                { id: 'proposals', label: 'Proposals' },
+                { id: 'milestones', label: 'Milestones' },
+                { id: 'chat', label: 'Chat' }
+              ].map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`py-2 px-1 border-b-2 font-medium text-sm ${
+                    activeTab === tab.id
+                      ? 'border-primary-500 text-primary-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </nav>
+                  </div>
                   </div>
                   
-                  <div className="text-center p-3 bg-gray-50 rounded-lg">
-                    <UserGroupIcon className="h-6 w-6 text-gray-600 mx-auto mb-1" />
-                    <div className="text-sm text-gray-600">Bids</div>
-                    <div className="font-medium">{bids.length}</div>
-                  </div>
-                  
-                  {project.estimated_hours > 0 && (
-                    <div className="text-center p-3 bg-gray-50 rounded-lg">
-                      <ClockIcon className="h-6 w-6 text-gray-600 mx-auto mb-1" />
-                      <div className="text-sm text-gray-600">Est. Hours</div>
-                      <div className="font-medium">{project.estimated_hours}h</div>
+        {/* Overview Tab */}
+        {activeTab === 'overview' && (
+          <div className="space-y-6">
+            {/* Project Description */}
+            <div className="card">
+              <div className="card-header">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                  Project Description
+                </h3>
                     </div>
-                  )}
-                  
-                  <div className="text-center p-3 bg-gray-50 rounded-lg">
-                    <StarIcon className="h-6 w-6 text-gray-600 mx-auto mb-1" />
-                    <div className="text-sm text-gray-600">Type</div>
-                    <div className="font-medium">
-                      {project.requires_team ? 'Team' : 'Individual'}
-                    </div>
+              <div className="card-body">
+                <p className="text-gray-600 dark:text-gray-400 whitespace-pre-wrap">
+                  {project.description}
+                </p>
                   </div>
                 </div>
 
                 {/* Required Skills */}
-                <div className="mb-6">
-                  <h3 className="font-medium text-gray-900 mb-3">Required Skills</h3>
+            {project.required_skills && project.required_skills.length > 0 && (
+              <div className="card">
+                <div className="card-header">
+                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                    Required Skills
+                  </h3>
+                </div>
+                <div className="card-body">
                   <div className="flex flex-wrap gap-2">
-                    {project.required_skills?.map((skill, index) => (
-                      <span key={index} className="badge-primary">
+                    {project.required_skills.map((skill, index) => (
+                      <span key={index} className="badge badge-primary">
                         {skill}
                       </span>
                     ))}
                   </div>
                 </div>
-
-                {/* Team Requirements */}
-                {project.requires_team && (
-                  <div className="mb-6 p-4 bg-blue-50 rounded-lg">
-                    <h3 className="font-medium text-blue-900 mb-2">Team Requirements</h3>
-                    <p className="text-blue-800">
-                      This project requires a team of {project.team_size_min} to {project.team_size_max} members.
-                    </p>
                   </div>
                 )}
-              </div>
 
-              {/* Project Description */}
-              <div className="card p-6">
-                <h2 className="text-lg font-semibold text-gray-900 mb-4">Project Description</h2>
-                <div className="prose max-w-none">
-                  <p className="text-gray-700 whitespace-pre-wrap">{project.description}</p>
+            {/* Project Details */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="card">
+                <div className="card-header">
+                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                    Project Details
+                  </h3>
                 </div>
-              </div>
-
-              {/* Milestones */}
-              {project.milestones && project.milestones.length > 0 && (
-                <div className="card p-6">
-                  <h2 className="text-lg font-semibold text-gray-900 mb-4">Project Milestones</h2>
-                  <div className="space-y-4">
-                    {project.milestones.map((milestone, index) => (
-                      <div key={index} className="border border-gray-200 rounded-lg p-4">
-                        <div className="flex items-center justify-between mb-2">
-                          <h3 className="font-medium text-gray-900">{milestone.title}</h3>
-                          <div className="text-sm font-medium text-primary-600">
-                            {milestone.weight_pct}% • {formatCurrency((project.budget * milestone.weight_pct) / 100)}
-                          </div>
-                        </div>
-                        {milestone.description && (
-                          <p className="text-gray-600 text-sm mb-2">{milestone.description}</p>
-                        )}
-                        {milestone.due_date && (
-                          <div className="text-xs text-gray-500">
-                            Due: {formatDate(milestone.due_date)}
-                          </div>
-                        )}
-                      </div>
-                    ))}
+                <div className="card-body space-y-3">
+                  <div>
+                    <span className="font-medium text-gray-900 dark:text-white">Type:</span>
+                    <span className="ml-2 text-gray-600 dark:text-gray-400 capitalize">
+                      {project.project_type}
+                    </span>
                   </div>
-                </div>
-              )}
-
-              {/* User's Bid Status */}
-              {userBid && (
-                <div className="card p-6">
-                  <h2 className="text-lg font-semibold text-gray-900 mb-4">Your Bid</h2>
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="font-medium text-blue-900">
-                        Bid Amount: {formatCurrency(userBid.price)}
-                      </span>
-                      <span className={`px-2 py-1 rounded-full text-xs ${
-                        userBid.status === 'accepted' ? 'bg-green-100 text-green-800' :
-                        userBid.status === 'rejected' ? 'bg-red-100 text-red-800' :
-                        'bg-yellow-100 text-yellow-800'
-                      }`}>
-                        {userBid.status}
-                      </span>
-                    </div>
-                    <p className="text-blue-800 text-sm mb-2">
-                      ETA: {userBid.eta_days} days
-                    </p>
-                    <p className="text-blue-700 text-sm">
-                      {userBid.proposal}
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Sidebar */}
-            <div className="space-y-6">
-              {/* Client Information */}
-              <div className="card p-6">
-                <h3 className="font-semibold text-gray-900 mb-4">Client</h3>
-                {client && (
-                  <div className="space-y-3">
-                    <div>
-                      <div className="font-medium text-gray-900">{client.name}</div>
-                      <div className="text-sm text-gray-600">{client.university}</div>
-                    </div>
-                    <div className="flex items-center text-sm text-gray-600">
-                      <CalendarIcon className="h-4 w-4 mr-1" />
-                      Member since {formatDate(client.created_at)}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Action Buttons */}
-              {canBid && (
-                <div className="space-y-3">
-                  <button
-                    onClick={() => setIsBidModalOpen(true)}
-                    className="btn-primary w-full"
-                  >
-                    Submit Bid
-                  </button>
-                  <button
-                    onClick={handleContactClient}
-                    className="btn-secondary w-full"
-                  >
-                    Contact Client
-                  </button>
-                </div>
-              )}
-
-              {!user && (
-                <div className="text-center p-4 bg-gray-50 rounded-lg">
-                  <p className="text-gray-600 mb-3">Want to bid on this project?</p>
-                  <Link href="/login" className="btn-primary">
-                    Sign In
-                  </Link>
-                </div>
-              )}
-
-              {user && user.role === 'client' && (
-                <div className="text-center p-4 bg-gray-50 rounded-lg">
-                  <p className="text-gray-600">You're viewing as a client</p>
-                </div>
-              )}
-
-              {project.status !== 'open' && (
-                <div className="text-center p-4 bg-gray-50 rounded-lg">
-                  <p className="text-gray-600">This project is no longer accepting bids</p>
-                </div>
-              )}
-
-              {/* Project Stats */}
-              <div className="card p-6">
-                <h3 className="font-semibold text-gray-900 mb-4">Project Stats</h3>
-                <div className="space-y-3">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">Total Bids</span>
-                    <span className="font-medium">{bids.length}</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">Average Bid</span>
-                    <span className="font-medium">
-                      {bids.length > 0 
-                        ? formatCurrency(bids.reduce((sum, bid) => sum + bid.price, 0) / bids.length)
-                        : 'N/A'
+                  <div>
+                    <span className="font-medium text-gray-900 dark:text-white">Budget:</span>
+                    <span className="ml-2 text-gray-600 dark:text-gray-400">
+                      {project.is_fixed_budget 
+                        ? `$${project.budget_min}` 
+                        : `$${project.budget_min} - $${project.budget_max}`
                       }
                     </span>
                   </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">Status</span>
-                    <span className={`font-medium ${
-                      project.status === 'open' ? 'text-green-600' :
-                      project.status === 'in_progress' ? 'text-blue-600' :
-                      'text-gray-600'
-                    }`}>
-                      {project.status.replace('_', ' ')}
+                  <div>
+                    <span className="font-medium text-gray-900 dark:text-white">Deadline:</span>
+                    <span className="ml-2 text-gray-600 dark:text-gray-400">
+                      {new Date(project.deadline?.toDate?.() || project.deadline).toLocaleDateString()}
                     </span>
                   </div>
+                  <div>
+                    <span className="font-medium text-gray-900 dark:text-white">Category:</span>
+                    <span className="ml-2 text-gray-600 dark:text-gray-400 capitalize">
+                      {project.category?.replace('-', ' ')}
+                    </span>
+              </div>
+                </div>
+              </div>
+
+              {/* Escrow Management */}
+              {isOwner && (
+                <div className="card">
+                  <div className="card-header">
+                    <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                      Escrow Management
+                    </h3>
+                  </div>
+                  <div className="card-body">
+                    <div className="mb-4">
+                      <div className="text-sm text-gray-500 dark:text-gray-400 mb-1">
+                        Current Escrow Balance
+                      </div>
+                      <div className="text-2xl font-bold text-gray-900 dark:text-white">
+                        ${escrowBalance}
+                          </div>
+                        </div>
+                    <EscrowDepositForm onDeposit={handleDepositEscrow} />
+                  </div>
+                          </div>
+                        )}
+                      </div>
+                  </div>
+        )}
+
+        {/* Proposals Tab */}
+        {activeTab === 'proposals' && (
+          <ProposalsTab
+            bids={bids}
+            isOwner={isOwner}
+            onAccept={handleAcceptBid}
+            onReject={handleRejectBid}
+          />
+        )}
+
+        {/* Milestones Tab */}
+        {activeTab === 'milestones' && (
+          <MilestonesTab
+            milestones={milestones}
+            isOwner={isOwner}
+            onApprove={handleApproveMilestone}
+            onRelease={handleReleaseMilestone}
+          />
+        )}
+
+        {/* Chat Tab */}
+        {activeTab === 'chat' && (
+          <div className="h-96">
+            <Chat projectId={id} />
+                </div>
+              )}
+
+        {/* Bid Form Modal */}
+        {showBidForm && (
+          <BidFormModal
+            project={project}
+            bidData={bidData}
+            setBidData={setBidData}
+            onSubmit={handleSubmitBid}
+            onClose={() => setShowBidForm(false)}
+          />
+        )}
+
+        {/* Chat Modal */}
+        {showChat && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+            <div className="bg-white dark:bg-gray-800 rounded-lg max-w-4xl w-full h-96">
+              <Chat projectId={id} onClose={() => setShowChat(false)} />
+                  </div>
+                </div>
+              )}
+            </div>
+    </Layout>
+  );
+};
+
+// Escrow Deposit Form Component
+const EscrowDepositForm = ({ onDeposit }) => {
+  const [amount, setAmount] = useState('');
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!amount || parseFloat(amount) <= 0) {
+      toast.error('Please enter a valid amount');
+      return;
+    }
+    onDeposit(amount);
+    setAmount('');
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-3">
+      <div>
+        <label className="label">Deposit Amount</label>
+        <input
+          type="number"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          className="input"
+          placeholder="Enter amount"
+          min="1"
+          step="0.01"
+        />
+      </div>
+      <button type="submit" className="btn btn-primary w-full">
+        Deposit to Escrow
+      </button>
+    </form>
+  );
+};
+
+// Proposals Tab Component
+const ProposalsTab = ({ bids, isOwner, onAccept, onReject }) => {
+  if (!isOwner) {
+    return (
+      <div className="text-center py-12">
+        <div className="text-gray-400 mb-4">
+          <svg className="mx-auto h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+          </svg>
+        </div>
+        <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
+          Access Restricted
+        </h3>
+        <p className="text-gray-500 dark:text-gray-400">
+          Only project owners can view proposals
+        </p>
+      </div>
+    );
+  }
+
+  return (
+            <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+          Project Proposals ({bids.length})
+        </h2>
+      </div>
+
+      {bids.length === 0 ? (
+        <div className="text-center py-12">
+          <div className="text-gray-400 mb-4">
+            <svg className="mx-auto h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+          </div>
+          <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
+            No proposals yet
+          </h3>
+          <p className="text-gray-500 dark:text-gray-400">
+            Proposals will appear here when students submit them
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {bids.map((bid) => (
+            <div key={bid.id} className="card">
+              <div className="card-body">
+                <div className="flex items-start justify-between mb-4">
+                  <div className="flex items-center space-x-3">
+                    <div className="w-10 h-10 bg-primary-100 dark:bg-primary-900 rounded-full flex items-center justify-center">
+                      <span className="text-sm font-medium text-primary-600 dark:text-primary-400">
+                        {bid.bidder?.name?.charAt(0) || '?'}
+                      </span>
+                    </div>
+                    <div>
+                      <div className="font-medium text-gray-900 dark:text-white">
+                        {bid.bidder?.name || 'Unknown'}
+                      </div>
+                      <div className="text-sm text-gray-500 dark:text-gray-400">
+                        {bid.bidder?.university} • {bid.skills_match}% skill match
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-lg font-bold text-gray-900 dark:text-white">
+                      ${bid.price}
+                    </div>
+                    <div className="text-sm text-gray-500 dark:text-gray-400">
+                      {bid.eta_days} days
+                    </div>
+                    </div>
+                  </div>
+
+                <div className="mb-4">
+                  <h4 className="font-medium text-gray-900 dark:text-white mb-2">Proposal</h4>
+                  <p className="text-gray-600 dark:text-gray-400">
+                    {bid.pitch}
+                  </p>
+              </div>
+
+                {bid.portfolio_url && (
+                  <div className="mb-4">
+                    <a
+                      href={bid.portfolio_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary-600 hover:text-primary-800 text-sm"
+                    >
+                      View Portfolio →
+                    </a>
+                  </div>
+                )}
+
+                <div className="flex justify-end space-x-3">
+                  <button
+                    onClick={() => onReject(bid.id)}
+                    className="btn btn-error btn-sm"
+                  >
+                    Reject
+                  </button>
+                  <button
+                    onClick={() => onAccept(bid.id)}
+                    className="btn btn-primary btn-sm"
+                  >
+                    Accept
+                  </button>
                 </div>
               </div>
             </div>
+          ))}
+                </div>
+              )}
+    </div>
+  );
+};
+
+// Milestones Tab Component
+const MilestonesTab = ({ milestones, isOwner, onApprove, onRelease }) => {
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+          Project Milestones ({milestones.length})
+        </h2>
+                </div>
+
+      {milestones.length === 0 ? (
+        <div className="text-center py-12">
+          <div className="text-gray-400 mb-4">
+            <svg className="mx-auto h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+            </svg>
+          </div>
+          <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
+            No milestones defined
+          </h3>
+          <p className="text-gray-500 dark:text-gray-400">
+            Milestones will appear here when they are created
+          </p>
+                </div>
+      ) : (
+        <div className="space-y-4">
+          {milestones.map((milestone, index) => (
+            <div key={milestone.id} className="card">
+              <div className="card-body">
+                <div className="flex items-start justify-between mb-4">
+                  <div>
+                    <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                      {milestone.title}
+                    </h3>
+                    <p className="text-gray-600 dark:text-gray-400">
+                      {milestone.description}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-lg font-bold text-gray-900 dark:text-white">
+                      {milestone.percentage}%
+                  </div>
+                    <div className="text-sm text-gray-500 dark:text-gray-400">
+                      Due: {new Date(milestone.due_date?.toDate?.() || milestone.due_date).toLocaleDateString()}
+                  </div>
+                </div>
+              </div>
+
+                <div className="flex items-center justify-between">
+                  <span className={`badge ${
+                    milestone.status === 'pending' ? 'badge-warning' :
+                    milestone.status === 'approved' ? 'badge-success' :
+                    milestone.status === 'released' ? 'badge-primary' : 'badge-error'
+                  }`}>
+                    {milestone.status.replace('_', ' ')}
+                  </span>
+                  
+                  {isOwner && milestone.status === 'pending' && (
+                    <button
+                      onClick={() => onApprove(milestone.id)}
+                      className="btn btn-success btn-sm"
+                    >
+                      Approve
+                    </button>
+                  )}
+                  
+                  {isOwner && milestone.status === 'approved' && (
+                    <button
+                      onClick={() => onRelease(milestone.id)}
+                      className="btn btn-primary btn-sm"
+                    >
+                      Release Funds
+                    </button>
+                  )}
+            </div>
           </div>
         </div>
+          ))}
+        </div>
+      )}
       </div>
+  );
+};
 
-      {/* Bid Modal */}
-      {isBidModalOpen && (
+// Bid Form Modal Component
+const BidFormModal = ({ project, bidData, setBidData, onSubmit, onClose }) => {
+  return (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-lg max-w-2xl w-full max-h-screen overflow-y-auto">
-            <div className="p-6">
-              <h2 className="text-xl font-semibold text-gray-900 mb-4">Submit Your Bid</h2>
-              
-              <form onSubmit={handleBidSubmit} className="space-y-6">
-                <div className="grid grid-cols-2 gap-6">
+      <div className="bg-white dark:bg-gray-800 rounded-lg max-w-2xl w-full p-6">
+        <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
+          Submit Proposal
+        </h2>
+
+        <form onSubmit={onSubmit} className="space-y-4">
                   <div>
-                    <label className="label">
-                      Your Bid ($) <span className="text-red-500">*</span>
-                    </label>
+            <label className="label">Proposed Price *</label>
                     <input
                       type="number"
                       value={bidData.price}
-                      onChange={(e) => setBidData({...bidData, price: e.target.value})}
+              onChange={(e) => setBidData({ ...bidData, price: e.target.value })}
                       className="input"
-                      placeholder="1000"
+              placeholder="Enter your proposed price"
                       min="1"
+              step="0.01"
                       required
                     />
                   </div>
 
                   <div>
-                    <label className="label">
-                      Delivery Time (days) <span className="text-red-500">*</span>
-                    </label>
+            <label className="label">Estimated Days *</label>
                     <input
                       type="number"
                       value={bidData.eta_days}
-                      onChange={(e) => setBidData({...bidData, eta_days: e.target.value})}
+              onChange={(e) => setBidData({ ...bidData, eta_days: e.target.value })}
                       className="input"
-                      placeholder="14"
+              placeholder="How many days will this take?"
                       min="1"
                       required
                     />
-                  </div>
                 </div>
 
                 <div>
-                  <label className="label">
-                    Your Proposal <span className="text-red-500">*</span>
-                  </label>
+            <label className="label">Proposal Pitch *</label>
                   <textarea
-                    rows={6}
-                    value={bidData.proposal}
-                    onChange={(e) => setBidData({...bidData, proposal: e.target.value})}
+              value={bidData.pitch}
+              onChange={(e) => setBidData({ ...bidData, pitch: e.target.value })}
                     className="input"
-                    placeholder="Explain your approach, experience, and why you're the right fit for this project..."
+              rows={4}
+              placeholder="Why should the client choose you? What's your approach?"
                     required
                   />
                 </div>
 
                 <div>
-                  <label className="label">Portfolio Links (Optional)</label>
-                  <div className="space-y-2">
-                    {bidData.portfolio_links.map((link, index) => (
-                      <div key={index} className="flex space-x-2">
+            <label className="label">Portfolio URL</label>
                         <input
                           type="url"
-                          value={link}
-                          onChange={(e) => handlePortfolioLinkChange(index, e.target.value)}
-                          className="input flex-1"
-                          placeholder="https://github.com/yourproject"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => removePortfolioLink(index)}
-                          className="btn-secondary px-3"
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    ))}
-                    <button
-                      type="button"
-                      onClick={addPortfolioLink}
-                      className="btn-secondary text-sm"
-                    >
-                      + Add Portfolio Link
-                    </button>
-                  </div>
+              value={bidData.portfolio_url}
+              onChange={(e) => setBidData({ ...bidData, portfolio_url: e.target.value })}
+              className="input"
+              placeholder="Link to your portfolio or previous work"
+            />
                 </div>
 
                 <div>
-                  <label className="label">Additional Message (Optional)</label>
+            <label className="label">Additional Message</label>
                   <textarea
-                    rows={3}
                     value={bidData.message}
-                    onChange={(e) => setBidData({...bidData, message: e.target.value})}
+              onChange={(e) => setBidData({ ...bidData, message: e.target.value })}
                     className="input"
+              rows={3}
                     placeholder="Any additional information for the client..."
                   />
                 </div>
 
-                <div className="flex justify-end space-x-4">
+          <div className="flex justify-end space-x-3">
                   <button
                     type="button"
-                    onClick={() => setIsBidModalOpen(false)}
-                    className="btn-secondary"
-                    disabled={bidMutation.isLoading}
+              onClick={onClose}
+              className="btn btn-secondary"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className="btn-primary"
-                    disabled={bidMutation.isLoading}
+              className="btn btn-primary"
                   >
-                    {bidMutation.isLoading ? 'Submitting...' : 'Submit Bid'}
+              Submit Proposal
                   </button>
                 </div>
               </form>
             </div>
           </div>
-        </div>
-      )}
-    </Layout>
   );
 };
 
-export default ProjectDetailPage;
+export default ProjectDetails;

@@ -110,59 +110,7 @@ const calculateCategoryStrength = (mainSkills, microSkills, category) => {
   return Math.round((mainSkillsScore + microSkillsScore) * 100);
 };
 
-/**
- * Get trending skills in the university marketplace
- */
-const getTrendingSkills = async (universityId, timeframe = 30) => {
-  try {
-    const projectsSnapshot = await admin.firestore()
-      .collection('projects')
-      .where('created_at', '>=', admin.firestore.Timestamp.fromDate(
-        new Date(Date.now() - timeframe * 24 * 60 * 60 * 1000)
-      ))
-      .get();
-
-    // Count skill occurrences
-    const skillCounts = {};
-    const totalProjects = projectsSnapshot.size;
-
-    projectsSnapshot.forEach(doc => {
-      const project = doc.data();
-      project.required_skills?.forEach(skill => {
-        skillCounts[skill] = (skillCounts[skill] || 0) + 1;
-      });
-    });
-
-    // Calculate trend scores
-    const trends = Object.entries(skillCounts).map(([skill, count]) => ({
-      skill,
-      count,
-      demandScore: (count / totalProjects) * 100,
-      category: findSkillCategory(skill)
-    }));
-
-    // Sort by demand score
-    return trends.sort((a, b) => b.demandScore - a.demandScore);
-  } catch (error) {
-    console.error('Error getting trending skills:', error);
-    throw error;
-  }
-};
-
-/**
- * Find which category a skill belongs to
- */
-const findSkillCategory = (skill) => {
-  for (const [key, category] of Object.entries(skillCategories)) {
-    if (category.skills.some(s => 
-      s.toLowerCase().includes(skill.toLowerCase()) ||
-      skill.toLowerCase().includes(s.toLowerCase())
-    )) {
-      return key;
-    }
-  }
-  return 'other';
-};
+// Removed duplicate getTrendingSkills function to fix redeclaration error.
 
 /**
  * Find which category a skill belongs to
@@ -240,8 +188,4 @@ module.exports = {
   findSkillCategory,
   categorizeStudentSkills,
   getTrendingSkills
-  skillCategories,
-  categorizeStudentSkills,
-  getTrendingSkills,
-  findSkillCategory
 };

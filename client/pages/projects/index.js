@@ -33,15 +33,74 @@ const ProjectsPage = () => {
   const [showFilters, setShowFilters] = useState(false);
 
   // Fetch projects
-  const { data: projectsData, isLoading, refetch } = useQuery(
+  const { data: projectsData, isLoading, error, refetch } = useQuery(
     ['projects', filters],
-    () => projectsAPI.getProjects(filters),
+    async () => {
+      try {
+        // Get auth token
+        let token = null;
+        try {
+          const authData = localStorage.getItem('gigcampus_auth');
+          if (authData) {
+            const parsed = JSON.parse(authData);
+            token = parsed.token;
+          }
+        } catch (err) {
+          console.warn('Error reading auth token:', err);
+        }
+
+        // Build query string from filters
+        const queryParams = new URLSearchParams();
+        if (filters.category) queryParams.append('category', filters.category);
+        if (filters.status) queryParams.append('status', filters.status);
+        if (filters.search) queryParams.append('search', filters.search);
+        if (filters.minBudget) queryParams.append('min_budget', filters.minBudget);
+        if (filters.maxBudget) queryParams.append('max_budget', filters.maxBudget);
+        if (filters.skills?.length) queryParams.append('skills', filters.skills.join(','));
+
+        // Make API request
+        const response = await fetch(
+          `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5001/api'}/projects?${queryParams.toString()}`,
+          {
+            method: 'GET',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+            }
+          }
+        );
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || 'Failed to load projects');
+        }
+
+        const data = await response.json();
+        console.log('Projects API response:', data); // Debug log
+
+        return {
+          success: true,
+          data: Array.isArray(data.projects) ? data.projects : [],
+          pagination: data.pagination || { total: 0, currentPage: 1, totalPages: 1 }
+        };
+      } catch (error) {
+        console.error('Error fetching projects:', error);
+        return {
+          success: false,
+          data: [],
+          error: error.message || 'Failed to load projects'
+        };
+      }
+    },
     {
-      enabled: true, // Remove authentication requirement for browsing projects
+      enabled: true,
+      refetchOnWindowFocus: false,
+      retry: 1,
+      staleTime: 30000 // Cache results for 30 seconds
     }
   );
 
-  const projects = projectsData?.data || []; // Fix: use .data instead of .projects
+  const projects = projectsData?.success ? projectsData.data : [];
   const pagination = projectsData?.pagination;
 
   const categories = [

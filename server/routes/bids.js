@@ -1,592 +1,559 @@
-// Bids routes for GigCampus
-// Handles bid creation, management, and acceptance
+// Enhanced Bids routes for GigCampus
+// Handles individual and team proposals with skill matching
 
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const { admin, db } = require('../config/firebase');
-const { auth, requireUniversityVerification, userRateLimit } = require('../middleware/auth');
+const { auth } = require('../middleware/auth');
+const RecommendationService = require('../services/RecommendationService');
 
 const router = express.Router();
 
-// Bid status constants
-const BID_STATUS = {
-  PENDING: 'pending',
-  ACCEPTED: 'accepted',
-  REJECTED: 'rejected',
-  WITHDRAWN: 'withdrawn'
-};
+/**
+ * POST /api/bids
+ * Submit a proposal (individual or team)
+ */
+router.post('/', auth, async (req, res) => {
+  try {
+    const { 
+      project_id, 
+      proposer_type, 
+      proposer_id, 
+      price, 
+      eta_days, 
+      pitch, 
+      portfolio_url,
+      proposed_team = [],
+      message = ''
+    } = req.body;
+
+    // Validate inputs
+    if (!project_id || !proposer_type || !proposer_id || !price || !eta_days || !pitch) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields',
+        details: ['project_id, proposer_type, proposer_id, price, eta_days, and pitch are required']
+      });
+    }
+
+    if (!['user', 'team'].includes(proposer_type)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid proposer type',
+        details: ['proposer_type must be "user" or "team"']
+      });
+    }
+
+    // Check if user is a student
+    if (req.user.role !== 'student') {
+      return res.status(403).json({
+        success: false,
+        error: 'Only students can submit proposals'
+      });
+    }
+
+    // Verify project exists and is open
+    const projectDoc = await db.collection('projects').doc(project_id).get();
+    
+    if (!projectDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: 'Project not found'
+      });
+    }
+
+    const project = projectDoc.data();
+    
+    if (project.status !== 'open') {
+      return res.status(400).json({
+        success: false,
+        error: 'Project is not accepting proposals',
+        details: [`Project status: ${project.status}`]
+      });
+    }
+
+    // Verify proposer
+    if (proposer_type === 'user') {
+      if (proposer_id !== req.user.id) {
+        return res.status(403).json({
+          success: false,
+          error: 'You can only submit proposals for yourself'
+        });
+      }
+    } else if (proposer_type === 'team') {
+      // Verify user is a member of the team
+      const teamMemberSnapshot = await db.collection('team_members')
+        .where('team_id', '==', proposer_id)
+        .where('user_id', '==', req.user.id)
+        .where('is_active', '==', true)
+        .get();
+
+      if (teamMemberSnapshot.empty) {
+        return res.status(403).json({
+          success: false,
+          error: 'You are not a member of this team'
+        });
+      }
+    }
+
+    // Check if user/team has already submitted a proposal for this project
+    const existingBidSnapshot = await db.collection('bids')
+      .where('project_id', '==', project_id)
+      .where('proposer_type', '==', proposer_type)
+      .where('proposer_id', '==', proposer_id)
+      .where('status', 'in', ['pending', 'accepted'])
+      .get();
+
+    if (!existingBidSnapshot.empty) {
+      return res.status(400).json({
+        success: false,
+        error: 'You have already submitted a proposal for this project'
+      });
+    }
+
+    // Calculate skill match if proposer is a user
+    let skillsMatch = 0;
+    if (proposer_type === 'user') {
+      const userDoc = await db.collection('users').doc(proposer_id).get();
+      if (userDoc.exists) {
+        const userData = userDoc.data();
+        const userSkills = userData.skills || [];
+        const requiredSkills = project.required_skills || [];
+        
+        if (requiredSkills.length > 0) {
+          const matches = requiredSkills.filter(skill => 
+            userSkills.some(userSkill => 
+              userSkill.toLowerCase().includes(skill.toLowerCase()) ||
+              skill.toLowerCase().includes(userSkill.toLowerCase())
+            )
+          ).length;
+          
+          skillsMatch = (matches / requiredSkills.length) * 100;
+        }
+      }
+    }
+
+    // Create proposal
+    const bidId = uuidv4();
+    const bidData = {
+      id: bidId,
+      project_id,
+      proposer_type,
+      proposer_id,
+      price: parseFloat(price),
+      eta_days: parseInt(eta_days),
+      pitch: pitch.trim(),
+      portfolio_url: portfolio_url?.trim() || '',
+      status: 'pending',
+      created_at: admin.firestore.FieldValue.serverTimestamp(),
+      updated_at: admin.firestore.FieldValue.serverTimestamp(),
+      proposed_team: proposed_team || [],
+      skills_match: skillsMatch,
+      previous_work: [],
+      message: message.trim()
+    };
+
+    await db.collection('bids').doc(bidId).set(bidData);
+
+    // Update project bid count
+    await db.collection('projects').doc(project_id).update({
+      bid_count: admin.firestore.FieldValue.increment(1)
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Proposal submitted successfully',
+      data: {
+        id: bidId,
+        ...bidData,
+        skills_match_percentage: skillsMatch
+      }
+    });
+
+  } catch (error) {
+    console.error('Submit proposal error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to submit proposal',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
 
 /**
  * GET /api/bids
- * Get bids (filtered by user role)
+ * Get user's proposals
  */
 router.get('/', auth, async (req, res) => {
   try {
-    const { status, project_id, page = 1, limit = 10 } = req.query;
-    
-    let query;
-    
-    // Students see their own bids, clients see bids on their projects
-    if (req.user.role === 'student') {
-      query = db.collection('bids').where('freelancer_id', '==', req.user.id);
-    } else {
-      // For clients, get bids on their projects
-      const myProjectsSnapshot = await db.collection('projects')
-        .where('client_id', '==', req.user.id)
-        .get();
-      
-      const projectIds = myProjectsSnapshot.docs.map(doc => doc.id);
-      
-      if (projectIds.length === 0) {
-        return res.json({
-          success: true,
-          data: [],
-          pagination: { page: 1, limit: 10, total: 0, pages: 0 }
-        });
-      }
+    const { status, page = 1, limit = 10 } = req.query;
 
-      query = db.collection('bids').where('project_id', 'in', projectIds);
-    }
+    let query = db.collection('bids')
+      .where('proposer_id', '==', req.user.id)
+      .orderBy('created_at', 'desc');
 
-    // Apply filters
     if (status && status !== 'all') {
       query = query.where('status', '==', status);
     }
 
-    if (project_id) {
-      query = query.where('project_id', '==', project_id);
-    }
-
-    query = query.orderBy('created_at', 'desc');
-
-    // Pagination
     const pageSize = Math.min(parseInt(limit), 50);
     const offset = (parseInt(page) - 1) * pageSize;
     
     query = query.limit(pageSize).offset(offset);
 
     const snapshot = await query.get();
-    const bids = [];
-
-    for (const doc of snapshot.docs) {
+    const proposals = await Promise.all(snapshot.docs.map(async (doc) => {
       const bidData = doc.data();
       
-      // Get project info
+      // Get project details
       const projectDoc = await db.collection('projects').doc(bidData.project_id).get();
       const projectData = projectDoc.exists ? projectDoc.data() : null;
 
-      // Get bidder info (for clients viewing bids)
-      let bidderData = null;
-      if (req.user.role !== 'student') {
-        const bidderDoc = await db.collection('users').doc(bidData.freelancer_id).get();
-        bidderData = bidderDoc.exists ? bidderDoc.data() : null;
-      }
-
-      bids.push({
+      return {
         id: doc.id,
         ...bidData,
         project: projectData ? {
-          id: bidData.project_id,
+          id: projectData.id,
           title: projectData.title,
-          budget: projectData.budget,
-          status: projectData.status
-        } : null,
-        bidder: bidderData ? {
-          id: bidderData.id,
-          name: bidderData.name,
-          university: bidderData.university,
-          university_verified: bidderData.university_verified,
-          skills: bidderData.skills || [],
-          average_rating: bidderData.average_rating || 0,
-          completed_projects: bidderData.completed_projects || 0
+          client_id: projectData.client_id,
+          status: projectData.status,
+          budget_min: projectData.budget_min,
+          budget_max: projectData.budget_max
         } : null
-      });
-    }
+      };
+    }));
 
     res.json({
       success: true,
-      data: bids
+      data: proposals,
+      pagination: {
+        page: parseInt(page),
+        limit: pageSize,
+        total: proposals.length,
+        pages: Math.ceil(proposals.length / pageSize)
+      }
     });
 
   } catch (error) {
-    console.error('Get bids error:', error);
-    res.status(500).json({ error: 'Failed to get bids' });
+    console.error('Get proposals error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get proposals',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
 /**
  * GET /api/bids/:id
- * Get specific bid by ID
+ * Get proposal details
  */
 router.get('/:id', auth, async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const bidDoc = await db.collection('bids').doc(id).get();
     
     if (!bidDoc.exists) {
-      return res.status(404).json({ error: 'Bid not found' });
+      return res.status(404).json({
+        success: false,
+        error: 'Proposal not found'
+      });
     }
 
     const bidData = bidDoc.data();
+
+    // Check if user has access to this proposal
+    const isOwner = bidData.proposer_id === req.user.id;
+    const isProjectOwner = await checkProjectOwnership(bidData.project_id, req.user.id);
     
-    // Check access permissions
-    const canAccess = bidData.freelancer_id === req.user.id || 
-                     (await checkProjectOwnership(bidData.project_id, req.user.id));
-    
-    if (!canAccess) {
-      return res.status(403).json({ error: 'Access denied' });
+    if (!isOwner && !isProjectOwner) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied'
+      });
     }
 
-    // Get project info
+    // Get project details
     const projectDoc = await db.collection('projects').doc(bidData.project_id).get();
     const projectData = projectDoc.exists ? projectDoc.data() : null;
 
-    // Get bidder info
-    const bidderDoc = await db.collection('users').doc(bidData.freelancer_id).get();
-    const bidderData = bidderDoc.exists ? bidderDoc.data() : null;
-
-    const bid = {
-      id,
-      ...bidData,
-      project: projectData ? {
-        id: bidData.project_id,
-        title: projectData.title,
-        description: projectData.description,
-        budget: projectData.budget,
-        deadline: projectData.deadline,
-        status: projectData.status,
-        client_id: projectData.client_id
-      } : null,
-      bidder: bidderData ? {
-        id: bidderData.id,
-        name: bidderData.name,
-        university: bidderData.university,
-        university_verified: bidderData.university_verified,
-        bio: bidderData.bio,
-        skills: bidderData.skills || [],
-        portfolio_links: bidderData.portfolio_links || [],
-        average_rating: bidderData.average_rating || 0,
-        completed_projects: bidderData.completed_projects || 0
-      } : null
-    };
+    // Get proposer details
+    let proposerData = null;
+    if (bidData.proposer_type === 'user') {
+      const userDoc = await db.collection('users').doc(bidData.proposer_id).get();
+      proposerData = userDoc.exists ? userDoc.data() : null;
+    } else if (bidData.proposer_type === 'team') {
+      const teamDoc = await db.collection('teams').doc(bidData.proposer_id).get();
+      proposerData = teamDoc.exists ? teamDoc.data() : null;
+    }
 
     res.json({
       success: true,
-      data: bid
+      data: {
+        ...bidData,
+        project: projectData,
+        proposer: proposerData
+      }
     });
 
   } catch (error) {
-    console.error('Get bid error:', error);
-    res.status(500).json({ error: 'Failed to get bid' });
+    console.error('Get proposal error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get proposal details',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
 /**
- * POST /api/bids
- * Create a new bid
+ * PUT /api/bids/:id/accept
+ * Accept a proposal (project owner only)
  */
-router.post('/', auth, requireUniversityVerification, userRateLimit(20, 60 * 60 * 1000), async (req, res) => {
-  try {
-    const { project_id, amount, timeline, proposal, milestones } = req.body;
-
-    // Validate required fields
-    if (!project_id || !amount || !timeline || !proposal) {
-      return res.status(400).json({ 
-        error: 'Missing required fields',
-        required: ['project_id', 'amount', 'timeline', 'proposal']
-      });
-    }
-
-    // Validate amount
-    if (amount < 25) {
-      return res.status(400).json({ error: 'Bid amount must be at least $25' });
-    }
-
-    // Validate proposal length
-    if (proposal.length < 50) {
-      return res.status(400).json({ 
-        error: 'Proposal must be at least 50 characters long' 
-      });
-    }
-
-    // Check if project exists and is open
-    const projectDoc = await db.collection('projects').doc(project_id).get();
-    
-    if (!projectDoc.exists) {
-      return res.status(404).json({ error: 'Project not found' });
-    }
-
-    const project = projectDoc.data();
-    
-    if (project.status !== 'open') {
-      return res.status(400).json({ error: 'Project is not accepting bids' });
-    }
-
-    // Can't bid on own projects
-    if (project.client_id === req.user.id) {
-      return res.status(400).json({ error: 'Cannot bid on your own project' });
-    }
-
-    // Check if user already has a pending bid on this project
-    const existingBidSnapshot = await db.collection('bids')
-      .where('project_id', '==', project_id)
-      .where('freelancer_id', '==', req.user.id)
-      .where('status', 'in', ['pending', 'accepted'])
-      .get();
-
-    if (!existingBidSnapshot.empty) {
-      return res.status(400).json({ 
-        error: 'You already have an active bid on this project' 
-      });
-    }
-
-    const bidId = uuidv4();
-    
-    const newBid = {
-      id: bidId,
-      project_id,
-      freelancer_id: req.user.id,
-      amount: parseFloat(amount),
-      timeline: parseInt(timeline), // days
-      proposal: proposal.trim(),
-      milestones: milestones || [],
-      status: BID_STATUS.PENDING,
-      
-      // Metadata
-      created_at: admin.firestore.FieldValue.serverTimestamp(),
-      updated_at: admin.firestore.FieldValue.serverTimestamp()
-    };
-
-    // Use transaction to ensure atomicity
-    await db.runTransaction(async (transaction) => {
-      // Create the bid
-      transaction.set(db.collection('bids').doc(bidId), newBid);
-      
-      // Update project bid count
-      transaction.update(db.collection('projects').doc(project_id), {
-        bid_count: admin.firestore.FieldValue.increment(1),
-        updated_at: admin.firestore.FieldValue.serverTimestamp()
-      });
-    });
-
-    res.status(201).json({
-      success: true,
-      message: 'Bid submitted successfully',
-      data: { id: bidId, ...newBid }
-    });
-
-  } catch (error) {
-    console.error('Create bid error:', error);
-    res.status(500).json({ error: 'Failed to create bid' });
-  }
-});
-
-/**
- * PUT /api/bids/:id
- * Update bid (only by bidder, only if pending)
- */
-router.put('/:id', auth, async (req, res) => {
+router.put('/:id/accept', auth, async (req, res) => {
   try {
     const { id } = req.params;
-    const { amount, timeline, proposal, milestones } = req.body;
-    
+
     const bidDoc = await db.collection('bids').doc(id).get();
     
     if (!bidDoc.exists) {
-      return res.status(404).json({ error: 'Bid not found' });
+      return res.status(404).json({
+        success: false,
+        error: 'Proposal not found'
+      });
     }
 
-    const bid = bidDoc.data();
+    const bidData = bidDoc.data();
+
+    // Check if user is project owner
+    const isProjectOwner = await checkProjectOwnership(bidData.project_id, req.user.id);
     
-    // Check ownership
-    if (bid.freelancer_id !== req.user.id) {
-      return res.status(403).json({ error: 'You can only update your own bids' });
+    if (!isProjectOwner) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only project owner can accept proposals'
+      });
     }
 
-    // Can only update pending bids
-    if (bid.status !== BID_STATUS.PENDING) {
-      return res.status(400).json({ error: 'Can only update pending bids' });
+    // Check if proposal is still pending
+    if (bidData.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        error: 'Proposal is not pending',
+        details: [`Current status: ${bidData.status}`]
+      });
     }
-
-    const updates = {};
-    
-    if (amount !== undefined) {
-      if (amount < 25) {
-        return res.status(400).json({ error: 'Bid amount must be at least $25' });
-      }
-      updates.amount = parseFloat(amount);
-    }
-    
-    if (timeline !== undefined) {
-      updates.timeline = parseInt(timeline);
-    }
-    
-    if (proposal !== undefined) {
-      if (proposal.length < 50) {
-        return res.status(400).json({ 
-          error: 'Proposal must be at least 50 characters long' 
-        });
-      }
-      updates.proposal = proposal.trim();
-    }
-    
-    if (milestones !== undefined) {
-      updates.milestones = milestones;
-    }
-
-    updates.updated_at = admin.firestore.FieldValue.serverTimestamp();
-
-    await db.collection('bids').doc(id).update(updates);
-
-    // Get updated bid
-    const updatedBidDoc = await db.collection('bids').doc(id).get();
-
-    res.json({
-      success: true,
-      message: 'Bid updated successfully',
-      data: { id, ...updatedBidDoc.data() }
-    });
-
-  } catch (error) {
-    console.error('Update bid error:', error);
-    res.status(500).json({ error: 'Failed to update bid' });
-  }
-});
-
-/**
- * POST /api/bids/:id/accept
- * Accept a bid (only by project owner)
- */
-router.post('/:id/accept', auth, async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    const bidDoc = await db.collection('bids').doc(id).get();
-    
-    if (!bidDoc.exists) {
-      return res.status(404).json({ error: 'Bid not found' });
-    }
-
-    const bid = bidDoc.data();
-    
-    // Check if user owns the project
-    const projectDoc = await db.collection('projects').doc(bid.project_id).get();
-    if (!projectDoc.exists) {
-      return res.status(404).json({ error: 'Project not found' });
-    }
-
-    const project = projectDoc.data();
-    
-    if (project.client_id !== req.user.id) {
-      return res.status(403).json({ error: 'You can only accept bids on your own projects' });
-    }
-
-    // Check if bid is still pending
-    if (bid.status !== BID_STATUS.PENDING) {
-      return res.status(400).json({ error: 'Bid is no longer pending' });
-    }
-
-    // Check if project is still open
-    if (project.status !== 'open') {
-      return res.status(400).json({ error: 'Project is no longer accepting bids' });
-    }
-
-    const contractId = uuidv4();
 
     // Use transaction to ensure atomicity
-    await db.runTransaction(async (transaction) => {
-      // Accept the bid
-      transaction.update(db.collection('bids').doc(id), {
-        status: BID_STATUS.ACCEPTED,
+    const result = await db.runTransaction(async (transaction) => {
+      // Accept the proposal
+      const bidRef = db.collection('bids').doc(id);
+      transaction.update(bidRef, {
+        status: 'accepted',
         accepted_at: admin.firestore.FieldValue.serverTimestamp(),
-        updated_at: admin.firestore.FieldValue.serverTimestamp()
+        accepted_by: req.user.id
       });
 
-      // Reject all other bids for this project
+      // Reject all other proposals for this project
       const otherBidsSnapshot = await db.collection('bids')
-        .where('project_id', '==', bid.project_id)
-        .where('status', '==', BID_STATUS.PENDING)
+        .where('project_id', '==', bidData.project_id)
+        .where('status', '==', 'pending')
         .get();
 
       otherBidsSnapshot.docs.forEach(doc => {
         if (doc.id !== id) {
           transaction.update(doc.ref, {
-            status: BID_STATUS.REJECTED,
+            status: 'rejected',
             rejected_at: admin.firestore.FieldValue.serverTimestamp(),
-            updated_at: admin.firestore.FieldValue.serverTimestamp()
+            rejected_by: req.user.id
           });
         }
       });
 
       // Update project status
-      transaction.update(db.collection('projects').doc(bid.project_id), {
+      const projectRef = db.collection('projects').doc(bidData.project_id);
+      transaction.update(projectRef, {
         status: 'in_progress',
-        freelancer_id: bid.freelancer_id,
-        accepted_bid_id: id,
-        started_at: admin.firestore.FieldValue.serverTimestamp(),
         updated_at: admin.firestore.FieldValue.serverTimestamp()
       });
 
       // Create contract
+      const contractId = uuidv4();
       const contractData = {
         id: contractId,
-        project_id: bid.project_id,
-        client_id: project.client_id,
-        freelancer_id: bid.freelancer_id,
-        bid_id: id,
-        amount: bid.amount,
+        project_id: bidData.project_id,
+        accepted_bid_id: id,
+        proposer_type: bidData.proposer_type,
+        proposer_id: bidData.proposer_id,
+        client_id: req.user.id,
         status: 'active',
+        total_amount: bidData.price,
+        escrow_balance: 0,
         created_at: admin.firestore.FieldValue.serverTimestamp(),
-        updated_at: admin.firestore.FieldValue.serverTimestamp()
+        started_at: admin.firestore.FieldValue.serverTimestamp()
       };
 
       transaction.set(db.collection('contracts').doc(contractId), contractData);
 
-      // Create milestones if they exist in the bid
-      if (bid.milestones && bid.milestones.length > 0) {
-        bid.milestones.forEach((milestone, index) => {
-          const milestoneId = uuidv4();
-          const milestoneData = {
-            id: milestoneId,
-            project_id: bid.project_id,
-            contract_id: contractId,
-            title: milestone.title,
-            description: milestone.description || '',
-            amount: parseFloat(milestone.amount),
-            deadline: admin.firestore.Timestamp.fromDate(new Date(milestone.deadline)),
-            order: index + 1,
-            status: 'pending',
-            created_at: admin.firestore.FieldValue.serverTimestamp()
-          };
-          
-          transaction.set(db.collection('milestones').doc(milestoneId), milestoneData);
-        });
+      return { contractId, contractData };
+    });
+
+    res.json({
+      success: true,
+      message: 'Proposal accepted successfully',
+      data: {
+        bid_id: id,
+        contract_id: result.contractId,
+        status: 'accepted'
       }
     });
 
-    res.json({
-      success: true,
-      message: 'Bid accepted successfully',
-      contract_id: contractId
-    });
-
   } catch (error) {
-    console.error('Accept bid error:', error);
-    res.status(500).json({ error: 'Failed to accept bid' });
+    console.error('Accept proposal error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to accept proposal',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
 /**
- * POST /api/bids/:id/reject
- * Reject a bid (only by project owner)
+ * PUT /api/bids/:id/reject
+ * Reject a proposal (project owner only)
  */
-router.post('/:id/reject', auth, async (req, res) => {
+router.put('/:id/reject', auth, async (req, res) => {
   try {
     const { id } = req.params;
     const { reason } = req.body;
-    
+
     const bidDoc = await db.collection('bids').doc(id).get();
     
     if (!bidDoc.exists) {
-      return res.status(404).json({ error: 'Bid not found' });
+      return res.status(404).json({
+        success: false,
+        error: 'Proposal not found'
+      });
     }
 
-    const bid = bidDoc.data();
+    const bidData = bidDoc.data();
+
+    // Check if user is project owner
+    const isProjectOwner = await checkProjectOwnership(bidData.project_id, req.user.id);
     
-    // Check if user owns the project
-    const canReject = await checkProjectOwnership(bid.project_id, req.user.id);
-    
-    if (!canReject) {
-      return res.status(403).json({ error: 'You can only reject bids on your own projects' });
+    if (!isProjectOwner) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only project owner can reject proposals'
+      });
     }
 
-    // Check if bid is still pending
-    if (bid.status !== BID_STATUS.PENDING) {
-      return res.status(400).json({ error: 'Bid is no longer pending' });
+    // Check if proposal is still pending
+    if (bidData.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        error: 'Proposal is not pending',
+        details: [`Current status: ${bidData.status}`]
+      });
     }
 
-    const updates = {
-      status: BID_STATUS.REJECTED,
+    // Reject the proposal
+    await db.collection('bids').doc(id).update({
+      status: 'rejected',
       rejected_at: admin.firestore.FieldValue.serverTimestamp(),
-      updated_at: admin.firestore.FieldValue.serverTimestamp()
-    };
-
-    if (reason) {
-      updates.rejection_reason = reason.trim();
-    }
-
-    await db.collection('bids').doc(id).update(updates);
+      rejected_by: req.user.id,
+      rejection_reason: reason || ''
+    });
 
     res.json({
       success: true,
-      message: 'Bid rejected successfully'
+      message: 'Proposal rejected successfully'
     });
 
   } catch (error) {
-    console.error('Reject bid error:', error);
-    res.status(500).json({ error: 'Failed to reject bid' });
+    console.error('Reject proposal error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to reject proposal',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
 /**
- * POST /api/bids/:id/withdraw
- * Withdraw a bid (only by bidder, only if pending)
+ * PUT /api/bids/:id/withdraw
+ * Withdraw a proposal (proposer only)
  */
-router.post('/:id/withdraw', auth, async (req, res) => {
+router.put('/:id/withdraw', auth, async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const bidDoc = await db.collection('bids').doc(id).get();
     
     if (!bidDoc.exists) {
-      return res.status(404).json({ error: 'Bid not found' });
-    }
-
-    const bid = bidDoc.data();
-    
-    // Check ownership
-    if (bid.freelancer_id !== req.user.id) {
-      return res.status(403).json({ error: 'You can only withdraw your own bids' });
-    }
-
-    // Can only withdraw pending bids
-    if (bid.status !== BID_STATUS.PENDING) {
-      return res.status(400).json({ error: 'Can only withdraw pending bids' });
-    }
-
-    // Use transaction to ensure atomicity
-    await db.runTransaction(async (transaction) => {
-      // Update bid status
-      transaction.update(db.collection('bids').doc(id), {
-        status: BID_STATUS.WITHDRAWN,
-        withdrawn_at: admin.firestore.FieldValue.serverTimestamp(),
-        updated_at: admin.firestore.FieldValue.serverTimestamp()
+      return res.status(404).json({
+        success: false,
+        error: 'Proposal not found'
       });
+    }
 
-      // Update project bid count
-      transaction.update(db.collection('projects').doc(bid.project_id), {
-        bid_count: admin.firestore.FieldValue.increment(-1)
+    const bidData = bidDoc.data();
+
+    // Check if user is the proposer
+    if (bidData.proposer_id !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only the proposer can withdraw the proposal'
       });
+    }
+
+    // Check if proposal can be withdrawn
+    if (!['pending'].includes(bidData.status)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Proposal cannot be withdrawn',
+        details: [`Current status: ${bidData.status}`]
+      });
+    }
+
+    // Withdraw the proposal
+    await db.collection('bids').doc(id).update({
+      status: 'withdrawn',
+      withdrawn_at: admin.firestore.FieldValue.serverTimestamp()
     });
 
     res.json({
       success: true,
-      message: 'Bid withdrawn successfully'
+      message: 'Proposal withdrawn successfully'
     });
 
   } catch (error) {
-    console.error('Withdraw bid error:', error);
-    res.status(500).json({ error: 'Failed to withdraw bid' });
+    console.error('Withdraw proposal error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to withdraw proposal',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
-// Helper function to check project ownership
+/**
+ * Helper function to check if user owns a project
+ */
 async function checkProjectOwnership(projectId, userId) {
   try {
     const projectDoc = await db.collection('projects').doc(projectId).get();
-    return projectDoc.exists && projectDoc.data().client_id === userId;
+    
+    if (!projectDoc.exists) {
+      return false;
+    }
+
+    const projectData = projectDoc.data();
+    return projectData.client_id === userId;
+
   } catch (error) {
+    console.error('Check project ownership error:', error);
     return false;
   }
 }

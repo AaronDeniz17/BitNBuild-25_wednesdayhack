@@ -1,601 +1,664 @@
-# GigCampus - Hyperlocal Student Freelancer Platform
+# BitNBuild - Enhanced Freelance Platform
 
-A comprehensive MVP platform connecting students with local opportunities, built for hackathon deployment with full-stack functionality.
+## Project Abstract
+BitNBuild is an innovative freelance marketplace platform designed specifically for university students and early-career professionals. It combines advanced project matching algorithms with secure payment handling and real-time collaboration tools to create a comprehensive ecosystem for skill development and project execution.
 
-## 🚀 Features
+The platform addresses several key challenges in the student freelancing space:
+- Skill-to-project matching for inexperienced freelancers
+- Secure payment handling for first-time contractors
+- Portfolio building opportunities for students
+- Real-time skill trend analysis for career guidance
+- Team formation and collaboration for larger projects
 
-### Core Functionality
-- **University-Verified Authentication** - Secure login with university email verification
-- **Project Management** - Post, browse, and manage projects with advanced filtering
-- **Bidding System** - Students can bid on projects individually or as teams
-- **Simulated Escrow** - Secure payment system with milestone-based releases
-- **Real-time Communication** - Project chat with file sharing
-- **Team Collaboration** - Form teams and work together on larger projects
-- **Portfolio & Reviews** - Build reputation with verified reviews
-- **Admin Dashboard** - Dispute resolution and platform management
+## Domain and Tools Used
 
-### Technical Stack
-- **Frontend**: React/Next.js with Tailwind CSS
-- **Backend**: Node.js/Express with Firebase
+### Frontend Technologies
+- **Framework**: Next.js (React)
+- **Styling**: Tailwind CSS, Heroicons
+- **State Management**: React Query, Context API
+- **Authentication**: Firebase Auth
+- **Real-time Features**: Firebase Realtime Database
+- **UI Components**: Custom components with dark/light mode support
+
+### Backend Technologies
+- **Server**: Node.js with Express.js
 - **Database**: Firebase Firestore
-- **Authentication**: Firebase Auth with JWT
-- **Real-time**: Firebase Realtime Database
-- **Payments**: Simulated escrow system (Stripe-ready)
+- **Storage**: Supabase Storage
+- **Authentication**: Firebase Admin SDK
+- **Security**: 
+  - JWT token authentication
+  - Rate limiting
+  - CORS protection
+  - Request validation
 
-## 📁 Project Structure
+### Development Tools
+- **Version Control**: Git & GitHub
+- **Package Management**: npm
+- **Code Quality**: ESLint, Prettier
+- **Environment**: dotenv for configuration
+- **Testing**: Jest for unit testing
 
-```
-gigcampus-mvp/
-├── client/                 # Next.js frontend
-│   ├── components/         # Reusable components
-│   ├── contexts/          # React contexts
-│   ├── lib/               # Utilities and API client
-│   ├── pages/             # Next.js pages
-│   └── styles/            # Global styles
-├── server/                # Express backend
-│   ├── config/            # Firebase configuration
-│   ├── middleware/        # Auth middleware
-│   ├── models/            # Database schemas
-│   └── routes/            # API routes
-└── README.md
-```
+### Key Features
 
-## 🛠️ Complete Setup Instructions
+#### Core Platform Features
+- 👥 **Advanced User Authentication**
+  - Role-based access control (Student, Client, Admin)
+  - Secure JWT-based sessions
+  - OAuth integration with academic emails
 
-### **Architecture Overview**
-- **Firebase Firestore** → Main database (users, projects, bids, contracts)
-- **Firebase Auth** → User authentication and login system
-- **Firebase Realtime Database** → Real-time chat functionality
-- **Supabase Storage** → File storage (profile pics, attachments, documents)
+- 💼 **Intelligent Project Management**
+  - Automated skill-based project matching
+  - Milestone tracking and management
+  - Project timeline visualization
+  - File sharing and version control
+  - Real-time progress updates
 
-### **Prerequisites**
-- Node.js 16+ 
-- Firebase project
-- Supabase project
-- Git
+- 💰 **Secure Payment System**
+  - Escrow-based payment protection
+  - Milestone-linked payments
+  - Transaction history tracking
+  - Multiple payment method support
+  - Automated invoice generation
 
----
+#### Collaboration Tools
+- 💬 **Enhanced Communication**
+  - Real-time chat with file sharing
+  - Project-specific chat rooms
+  - Notification system
+  - Meeting scheduler integration
 
-## **📋 Step-by-Step Setup Guide**
+- 👥 **Team Collaboration**
+  - Team formation assistance
+  - Role assignment and management
+  - Skill complementarity matching
+  - Team performance analytics
 
-### **Step 1: Clone and Install Dependencies**
+#### Analytics and Insights
+- 📊 **Comprehensive Analytics**
+  - Earnings and performance tracking
+  - Skill development metrics
+  - Market demand analysis
+  - Project success rate tracking
+
+#### User Experience
+- 📱 **Enhanced UI/UX**
+  - Responsive design across devices
+  - Dark/Light mode support
+  - Intuitive navigation
+  - Accessibility compliance
+  - Real-time updates and notifications
+
+## Getting Started
+
+### Prerequisites
+- Node.js 16.x or higher
+- npm 8.x or higher
+- Firebase account with Firestore enabled
+- Supabase account for storage
+- Git for version control
+
+### Environment Setup
+
+1. Clone the repository:
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd gigcampus-mvp
+git clone https://github.com/yourusername/BitNBuild.git
+cd BitNBuild
+```
 
-# Install root dependencies
+2. Set up environment variables:
+
+For client (in client/.env):
+```plaintext
+NEXT_PUBLIC_FIREBASE_API_KEY=your_api_key
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=your_auth_domain
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=your_project_id
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=your_storage_bucket
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
+NEXT_PUBLIC_FIREBASE_APP_ID=your_app_id
+NEXT_PUBLIC_API_URL=http://localhost:3001
+```
+
+For server (in server/.env):
+```plaintext
+PORT=3001
+FIREBASE_ADMIN_PROJECT_ID=your_project_id
+FIREBASE_ADMIN_PRIVATE_KEY=your_private_key
+FIREBASE_ADMIN_CLIENT_EMAIL=your_client_email
+SUPABASE_URL=your_supabase_url
+SUPABASE_KEY=your_supabase_key
+```
+
+3. Install dependencies:
+```bash
+# Install client dependencies
+cd client
 npm install
 
-# Install backend dependencies
+# Install server dependencies
+cd ../server
+npm install
+```
+
+### Running the Application
+
+1. Start the backend server:
+```bash
+cd server
+npm run dev
+```
+
+2. In a new terminal, start the frontend:
+```bash
+cd client
+npm run dev
+```
+
+3. Access the application:
+- Frontend: http://localhost:3000
+- Backend API: http://localhost:3001
+
+### Development Scripts
+
+Frontend (in client directory):
+- `npm run dev`: Start development server
+- `npm run build`: Build for production
+- `npm run start`: Start production server
+- `npm run lint`: Run ESLint
+
+Backend (in server directory):
+- `npm run dev`: Start development server
+- `npm run start`: Start production server
+- `npm test`: Run tests
+- `npm run seed`: Seed the database
+
+## Project Architecture
+
+### Frontend Structure
+```
+client/
+├── components/     # Reusable UI components
+├── contexts/       # React contexts for state management
+├── lib/           # Utility functions and API clients
+├── pages/         # Next.js pages and routing
+└── styles/        # Global styles and Tailwind config
+```
+
+### Backend Structure
+```
+server/
+├── config/        # Configuration files
+├── middleware/    # Express middleware
+├── models/        # Data models and schemas
+├── routes/        # API route handlers
+├── services/      # Business logic and external services
+├── tests/         # Test files
+└── utils/         # Utility functions
+```
+
+### Key Architecture Points
+
+1. **Frontend Architecture**
+   - Next.js for server-side rendering and routing
+   - React Query for server state management
+   - Context API for global state
+   - Component-based structure with reusable UI elements
+   - Responsive design with Tailwind CSS
+
+2. **Backend Architecture**
+   - Express.js RESTful API
+   - Modular route structure
+   - Service-based business logic
+   - Middleware for authentication and request processing
+   - Firebase Admin SDK for secure operations
+
+3. **Database Design**
+   - Firestore collections for main data storage
+   - Supabase for file storage
+   - Efficient querying with proper indexing
+   - Real-time data synchronization
+
+4. **Security Measures**
+   - JWT-based authentication
+   - Role-based access control
+   - Input validation and sanitization
+   - Rate limiting and CORS protection
+
+## Contributing
+
+We welcome contributions to BitNBuild! Here's how you can help:
+
+1. **Fork the Repository**
+   - Create your feature branch: `git checkout -b feature/AmazingFeature`
+   - Commit your changes: `git commit -m 'Add some AmazingFeature'`
+   - Push to the branch: `git push origin feature/AmazingFeature`
+   - Open a Pull Request
+
+2. **Coding Standards**
+   - Follow the existing code style
+   - Write meaningful commit messages
+   - Add appropriate comments and documentation
+   - Ensure all tests pass
+
+3. **Testing**
+   - Add tests for new features
+   - Ensure existing tests pass
+   - Test across different devices and browsers
+
+4. **Documentation**
+   - Update README.md if needed
+   - Document new features and changes
+   - Add comments for complex logic
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Support
+
+For support, email support@bitnbuild.com or join our Discord channel.
+
+### Advanced Features
+- **Multi-budget Support**: Fixed price or range-based project budgets
+- **Skill Matching**: Intelligent matching of projects to freelancers
+- **Trending Analysis**: Real-time trending projects and skills
+- **File Management**: Secure file uploads and sharing
+- **Transaction History**: Complete audit trail of all financial transactions
+- **Dispute Resolution**: Built-in dispute management system
+
+## 🛠 Tech Stack
+
+### Frontend
+- **Next.js 13+** with App Router
+- **React 18** with hooks and context
+- **Tailwind CSS** for styling
+- **React Hook Form** for form management
+- **React Query** for data fetching
+- **Socket.io** for real-time features
+
+### Backend
+- **Node.js** with Express
+- **Firebase Firestore** for database
+- **Firebase Auth** for authentication
+- **Firebase Realtime Database** for chat
+- **Supabase Storage** for file management
+- **JWT** for API authentication
+
+### Development Tools
+- **Jest** for testing
+- **ESLint** for code quality
+- **Prettier** for code formatting
+- **Husky** for git hooks
+
+## 📋 Prerequisites
+
+Before you begin, ensure you have the following installed:
+- Node.js 18+ 
+- npm or yarn
+- Firebase project with Firestore and Auth enabled
+- Supabase account (optional, for file storage)
+
+## 🚀 Quick Start
+
+### 1. Clone the Repository
+```bash
+git clone https://github.com/your-username/BitNBuild-25_wednesdayhack.git
+cd BitNBuild-25_wednesdayhack
+```
+
+### 2. Install Dependencies
+```bash
+# Install server dependencies
 cd server
 npm install
 
-# Install frontend dependencies
+# Install client dependencies
 cd ../client
 npm install
 ```
 
-### **Step 2: Firebase Project Setup**
+### 3. Environment Setup
 
-#### **2.1 Create Firebase Project**
-1. Go to [Firebase Console](https://console.firebase.google.com)
-2. Click "Create a project"
-3. Enter project name: `gigcampus-mvp`
-4. Enable Google Analytics (optional)
-5. Click "Create project"
-
-#### **2.2 Enable Firebase Services**
-1. **Firestore Database**:
-   - Go to "Firestore Database" → "Create database"
-   - Choose "Start in test mode" (we'll secure it later)
-   - Select a location (choose closest to your users)
-
-2. **Authentication**:
-   - Go to "Authentication" → "Get started"
-   - Go to "Sign-in method" tab
-   - Enable "Email/Password" provider
-   - Click "Save"
-
-3. **Realtime Database**:
-   - Go to "Realtime Database" → "Create database"
-   - Choose "Start in test mode"
-   - Select a location
-
-#### **2.3 Get Firebase Credentials**
-
-**Server-side credentials:**
-1. Go to Project Settings → "Service accounts" tab
-2. Click "Generate new private key"
-3. Download the JSON file
-4. Copy the values to your `.env` file
-
-**Client-side credentials:**
-1. Go to Project Settings → "General" tab
-2. Scroll down to "Your apps" section
-3. Click "Add app" → Web app
-4. Register app with nickname: "GigCampus Web"
-5. Copy the config values
-
-### **Step 3: Supabase Project Setup**
-
-#### **3.1 Create Supabase Project**
-1. Go to [Supabase Dashboard](https://supabase.com/dashboard)
-2. Click "New project"
-3. Choose your organization
-4. Enter project name: `gigcampus-storage`
-5. Enter database password (save this!)
-6. Choose region (same as Firebase)
-7. Click "Create new project"
-
-#### **3.2 Configure Supabase Storage**
-1. Go to "Storage" in your Supabase dashboard
-2. Create the following buckets:
-   ```bash
-   # Create buckets
-   profile-pictures
-   project-attachments
-   chat-files
-   portfolio-images
-   ```
-
-3. **Set bucket policies** (for each bucket):
-   ```sql
-   -- Allow authenticated users to upload
-   CREATE POLICY "Users can upload files" ON storage.objects
-   FOR INSERT WITH CHECK (auth.role() = 'authenticated');
-   
-   -- Allow public read access
-   CREATE POLICY "Public read access" ON storage.objects
-   FOR SELECT USING (true);
-   ```
-
-#### **3.3 Get Supabase Credentials**
-1. Go to Settings → "API"
-2. Copy the following values:
-   - Project URL
-   - Anon public key
-   - Service role key (keep this secret!)
-
-### **Step 4: Environment Configuration**
-
-#### **4.1 Backend Environment Setup**
+#### Server Environment (.env)
 ```bash
-cd server
-cp env.example .env
-```
+# Copy the example file
+cp server/.env.example server/.env
 
-Edit `server/.env` with your credentials:
-```env
-# Server Configuration
-PORT=5000
+# Edit the environment variables
 NODE_ENV=development
-CLIENT_URL=http://localhost:3000
+PORT=5000
 
-# JWT Secret (generate a strong secret)
-JWT_SECRET=your-super-secret-jwt-key-here
+# Firebase Configuration
+FIREBASE_PROJECT_ID=your-project-id
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+FIREBASE_CLIENT_EMAIL=your-service-account@your-project.iam.gserviceaccount.com
+FIREBASE_DATABASE_URL=https://your-project-default-rtdb.firebaseio.com
 
-# Firebase Configuration (from Step 2.3)
-FIREBASE_PROJECT_ID=your-firebase-project-id
-FIREBASE_PRIVATE_KEY_ID=your-private-key-id
-FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nYOUR_PRIVATE_KEY_HERE\n-----END PRIVATE KEY-----\n"
-FIREBASE_CLIENT_EMAIL=your-client-email@your-project-id.iam.gserviceaccount.com
-FIREBASE_CLIENT_ID=your-client-id
-FIREBASE_AUTH_URI=https://accounts.google.com/o/oauth2/auth
-FIREBASE_TOKEN_URI=https://oauth2.googleapis.com/token
-FIREBASE_AUTH_PROVIDER_X509_CERT_URL=https://www.googleapis.com/oauth2/v1/certs
-FIREBASE_CLIENT_X509_CERT_URL=https://www.googleapis.com/robot/v1/metadata/x509/your-client-email%40your-project-id.iam.gserviceaccount.com
-FIREBASE_DATABASE_URL=https://your-project-id-default-rtdb.firebaseio.com
-
-# Supabase Storage Configuration (from Step 3.3)
-SUPABASE_URL=https://your-project-id.supabase.co
+# Supabase Configuration (Optional)
+SUPABASE_URL=your-supabase-url
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 
-# Email Configuration (optional)
-EMAIL_HOST=smtp.gmail.com
-EMAIL_PORT=587
-EMAIL_USER=your-email@gmail.com
-EMAIL_PASS=your-app-password
+# JWT Configuration
+JWT_SECRET=your-jwt-secret
+JWT_EXPIRES_IN=7d
+
+# Rate Limiting
+RATE_LIMIT_WINDOW_MS=900000
+RATE_LIMIT_MAX_REQUESTS=100
 ```
 
-#### **4.2 Frontend Environment Setup**
+#### Client Environment (.env.local)
 ```bash
-cd client
-cp env.local.example .env.local
-```
+# Copy the example file
+cp client/.env.example client/.env.local
 
-Edit `client/.env.local` with your credentials:
-```env
-# API Configuration
-NEXT_PUBLIC_API_URL=http://localhost:5000/api
-
-# Firebase Configuration (from Step 2.3)
-NEXT_PUBLIC_FIREBASE_API_KEY=your-api-key
-NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=your-project-id.firebaseapp.com
+# Edit the environment variables
+NEXT_PUBLIC_API_URL=http://localhost:5000
+NEXT_PUBLIC_FIREBASE_API_KEY=your-firebase-api-key
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
 NEXT_PUBLIC_FIREBASE_PROJECT_ID=your-project-id
-NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=your-project-id.appspot.com
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=your-project.appspot.com
 NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your-sender-id
 NEXT_PUBLIC_FIREBASE_APP_ID=your-app-id
-NEXT_PUBLIC_FIREBASE_DATABASE_URL=https://your-project-id-default-rtdb.firebaseio.com
-
-# Supabase Storage Configuration (from Step 3.3)
-NEXT_PUBLIC_SUPABASE_URL=https://your-project-id.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 ```
 
-### **Step 5: Database Schema Setup**
+### 4. Firebase Setup
 
-#### **5.1 Firestore Collections**
-The following collections will be created automatically when you run the app:
-- `users` - User accounts
-- `student_profiles` - Student-specific data
-- `projects` - Project listings
-- `bids` - Project proposals
-- `contracts` - Accepted projects
-- `milestones` - Project deliverables
-- `teams` - Student teams
-- `transactions` - Payment records
-- `reviews` - Project reviews
-- `disputes` - Dispute records
-- `chat_messages` - Real-time chat
+1. **Create a Firebase Project**
+   - Go to [Firebase Console](https://console.firebase.google.com/)
+   - Create a new project
+   - Enable Firestore Database
+   - Enable Authentication
+   - Enable Realtime Database
 
-#### **5.2 Firestore Security Rules**
-Go to Firestore → Rules and add:
-```javascript
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    // Users can only access their own data
-    match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
-    }
-    
-    // Projects are readable by all authenticated users
-    match /projects/{projectId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && 
-        (resource.data.client_id == request.auth.uid || 
-         request.auth.token.role == 'admin');
-    }
-    
-    // Add more rules as needed...
-  }
-}
-```
+2. **Generate Service Account Key**
+   - Go to Project Settings > Service Accounts
+   - Generate a new private key
+   - Download the JSON file
+   - Extract the values for your `.env` file
 
-### **Step 6: Run the Application**
+3. **Configure Authentication**
+   - Enable Email/Password authentication
+   - Set up custom claims for user roles
 
-#### **6.1 Start Development Servers**
+### 5. Database Setup
+
+#### Run Database Migrations
 ```bash
-# From project root - starts both servers
+cd server
+npm run migrate
+```
+
+#### Seed the Database
+```bash
+npm run seed
+```
+
+### 6. Start the Development Servers
+
+#### Start the Backend Server
+```bash
+cd server
 npm run dev
-
-# OR run separately:
-# Terminal 1: Backend
-cd server && npm run dev
-
-# Terminal 2: Frontend  
-cd client && npm run dev
 ```
 
-#### **6.2 Verify Setup**
-1. **Backend**: Visit `http://localhost:5000/health`
-   - Should return: `{"status":"OK","timestamp":"...","service":"GigCampus API"}`
-
-2. **Frontend**: Visit `http://localhost:3000`
-   - Should show the GigCampus landing page
-
-3. **Test Registration**: Try creating a new account
-4. **Test File Upload**: Try uploading a profile picture
-
-### **Step 7: Production Deployment**
-
-#### **7.1 Environment Variables for Production**
-Set these in your hosting platform (Railway, Heroku, Vercel):
-
-**Backend (Railway/Heroku):**
-```env
-NODE_ENV=production
-PORT=5000
-CLIENT_URL=https://your-frontend-domain.com
-JWT_SECRET=your-production-jwt-secret
-# ... all Firebase and Supabase credentials
+#### Start the Frontend Development Server
+```bash
+cd client
+npm run dev
 ```
 
-**Frontend (Vercel/Netlify):**
-```env
-NEXT_PUBLIC_API_URL=https://your-backend-domain.com/api
-# ... all Firebase and Supabase credentials
+The application will be available at:
+- Frontend: http://localhost:3000
+- Backend API: http://localhost:5000
+
+## 🧪 Testing
+
+### Run All Tests
+```bash
+# Server tests
+cd server
+npm test
+
+# Client tests
+cd client
+npm test
 ```
 
-#### **7.2 Firebase Production Setup**
-1. **Firestore Rules**: Update to production rules
-2. **Authentication**: Configure authorized domains
-3. **Storage**: Set up CORS for your domain
+### Run Specific Test Suites
+```bash
+# Escrow service tests
+npm test -- --testPathPattern=escrow
 
-#### **7.3 Supabase Production Setup**
-1. **Storage Policies**: Update for production
-2. **CORS**: Configure for your domain
-3. **Rate Limiting**: Set appropriate limits
+# API route tests
+npm test -- --testPathPattern=api
 
----
+# Component tests
+npm test -- --testPathPattern=components
+```
 
-## **🔧 Troubleshooting**
+### Test Coverage
+```bash
+npm run test:coverage
+```
 
-### **Common Issues:**
+## 📚 API Documentation
 
-1. **"Missing required environment variables"**
-   - Check that all `.env` files are properly configured
-   - Verify no typos in variable names
-
-2. **Firebase connection errors**
-   - Verify Firebase project ID and credentials
-   - Check that Firestore and Auth are enabled
-
-3. **Supabase storage errors**
-   - Verify Supabase URL and keys
-   - Check that storage buckets exist
-   - Verify storage policies are set
-
-4. **CORS errors**
-   - Update CORS settings in Firebase
-   - Check CLIENT_URL in backend .env
-
-### **Getting Help:**
-- Check the console for error messages
-- Verify all environment variables are set
-- Test each service individually
-- Check Firebase and Supabase dashboards for errors
-
----
-
-## **🎯 Next Steps After Setup:**
-
-1. **Test all features**: Registration, login, project creation, file uploads
-2. **Configure security rules**: Update Firestore and Supabase policies
-3. **Set up monitoring**: Firebase Analytics, Supabase monitoring
-4. **Deploy to production**: Use the deployment guide above
-5. **Set up backups**: Configure Firebase and Supabase backups
-
-Your GigCampus platform is now ready to run! 🚀
-
-## 🎯 Team Module Split (4-Person Team)
-
-### Frontend Dev 1: Dashboard & Project Management
-**Files to implement:**
-- `client/pages/student/dashboard.js` ✅
-- `client/pages/client/dashboard.js` ✅
-- `client/pages/projects/index.js` ✅
-- `client/pages/projects/create.js` (TODO)
-- `client/pages/projects/[id].js` (TODO)
-- `client/components/ProjectCard.js` (TODO)
-- `client/components/ProjectForm.js` (TODO)
-
-### Frontend Dev 2: Workspace & Communication
-**Files to implement:**
-- `client/pages/projects/[id]/workspace.js` (TODO)
-- `client/components/Chat.js` (TODO)
-- `client/components/FileUpload.js` (TODO)
-- `client/pages/student/portfolio.js` (TODO)
-- `client/pages/leaderboard.js` (TODO)
-- `client/components/Leaderboard.js` (TODO)
-
-### Backend Dev 1: Core API & Payments
-**Files to implement:**
-- `server/routes/auth.js` ✅
-- `server/routes/projects.js` ✅
-- `server/routes/bids.js` ✅
-- `server/routes/contracts.js` ✅
-- `server/routes/transactions.js` ✅
-- `server/routes/milestones.js` ✅
-- `server/middleware/auth.js` ✅
-
-### Backend Dev 2: Teams & Admin
-**Files to implement:**
-- `server/routes/teams.js` ✅
-- `server/routes/reviews.js` ✅
-- `server/routes/admin.js` ✅
-- `server/routes/chat.js` ✅
-- `server/utils/recommendations.js` (TODO)
-- `server/utils/notifications.js` (TODO)
-
-## 🔧 API Endpoints
-
-### Authentication
+### Authentication Endpoints
 - `POST /api/auth/register` - User registration
 - `POST /api/auth/login` - User login
-- `POST /api/auth/verify-university` - University verification
+- `POST /api/auth/logout` - User logout
 - `GET /api/auth/profile` - Get user profile
-- `PUT /api/auth/profile` - Update profile
 
-### Projects
-- `GET /api/projects` - List projects with filters
-- `POST /api/projects` - Create project (clients)
+### Project Endpoints
+- `GET /api/projects` - List projects
+- `POST /api/projects` - Create project
 - `GET /api/projects/:id` - Get project details
 - `PUT /api/projects/:id` - Update project
 - `DELETE /api/projects/:id` - Delete project
-- `GET /api/projects/recommended` - Get recommended projects
-- `GET /api/projects/trending-skills` - Get trending skills
+- `GET /api/projects/recommendations` - Get recommendations
+- `GET /api/projects/trending` - Get trending projects
 
-### Bids & Contracts
-- `POST /api/bids` - Submit bid
-- `GET /api/bids` - Get user's bids
-- `PUT /api/bids/:id/accept` - Accept bid
-- `PUT /api/bids/:id/reject` - Reject bid
-- `GET /api/contracts` - Get contracts
-- `GET /api/contracts/:id` - Get contract details
+### Escrow Endpoints
+- `POST /api/projects/:id/escrow/deposit` - Deposit to escrow
+- `GET /api/projects/:id/escrow/balance` - Get escrow balance
+- `GET /api/projects/:id/transactions` - Get transaction history
+- `POST /api/projects/:id/milestones/:mid/approve` - Approve milestone
+- `POST /api/projects/:id/milestones/:mid/release` - Release milestone funds
 
-### Payments & Escrow
-- `POST /api/transactions/escrow/deposit` - Deposit funds
-- `POST /api/transactions/escrow/release` - Release funds
-- `POST /api/transactions/escrow/partial-release` - Partial release
-- `GET /api/transactions/wallet` - Get wallet balance
-
-### Teams & Collaboration
+### Team Endpoints
 - `POST /api/teams` - Create team
 - `GET /api/teams` - List teams
+- `GET /api/teams/:id` - Get team details
 - `POST /api/teams/:id/join` - Join team
 - `POST /api/teams/:id/leave` - Leave team
-- `GET /api/teams/:id/wallet` - Team wallet
+- `PUT /api/teams/:id/members/:memberId/role` - Update member role
 
-### Reviews & Portfolio
-- `POST /api/reviews` - Submit review
-- `GET /api/reviews/user/:userId` - Get user reviews
-- `GET /api/reviews/stats/:userId` - Get review statistics
+### Chat Endpoints
+- `POST /api/chat/:projectId/messages` - Send message
+- `GET /api/chat/:projectId/messages` - Get messages
+- `POST /api/chat/:projectId/upload` - Upload file
 
-### Admin
-- `GET /api/admin/dashboard` - Admin dashboard
-- `GET /api/admin/disputes` - List disputes
-- `PUT /api/admin/disputes/:id/resolve` - Resolve dispute
-- `GET /api/admin/users` - List users
-- `PUT /api/admin/users/:id/status` - Update user status
+### Admin Endpoints
+- `GET /api/admin/transactions` - Get all transactions
+- `POST /api/admin/transactions/adjust` - Adjust user balance
+- `GET /api/admin/disputes` - Get disputes
+- `POST /api/admin/disputes/:id/resolve` - Resolve dispute
 
-## 💰 Simulated Escrow System
+## 🏗 Architecture
 
-The platform includes a complete simulated escrow system:
-
-1. **Deposit**: Clients deposit funds into escrow
-2. **Milestone Tracking**: Track project progress
-3. **Partial Release**: Release funds based on completion percentage
-4. **Team Splits**: Automatic payment distribution to team members
-5. **Dispute Resolution**: Admin tools for handling conflicts
-
-### Escrow Flow
+### Project Structure
 ```
-Client → Deposit → Escrow → Milestone → Release → Freelancer
+BitNBuild-25_wednesdayhack/
+├── client/                 # Next.js frontend
+│   ├── components/         # React components
+│   ├── pages/            # Next.js pages
+│   ├── contexts/         # React contexts
+│   ├── hooks/            # Custom hooks
+│   └── styles/           # CSS styles
+├── server/               # Node.js backend
+│   ├── routes/          # API routes
+│   ├── services/        # Business logic
+│   ├── models/          # Data models
+│   ├── middleware/      # Express middleware
+│   ├── utils/           # Utility functions
+│   └── tests/           # Test files
+└── docs/                # Documentation
 ```
 
-## 🎨 UI Components
+### Database Schema
 
-Built with Tailwind CSS and custom components:
+#### Users Collection
+```javascript
+{
+  id: string,
+  email: string,
+  name: string,
+  role: 'student' | 'client' | 'admin',
+  university_verified: boolean,
+  university: string,
+  wallet_balance: number,
+  escrow_balance: number,
+  skills: string[],
+  created_at: timestamp,
+  updated_at: timestamp
+}
+```
 
-- **Layout**: Header, Footer, Navigation
-- **Forms**: Input, Button, Select components
-- **Cards**: Project cards, user cards
-- **Modals**: Bid modal, team modal
-- **Charts**: Analytics, leaderboard
-- **Chat**: Real-time messaging
+#### Projects Collection
+```javascript
+{
+  id: string,
+  client_id: string,
+  title: string,
+  description: string,
+  required_skills: string[],
+  budget_min: number,
+  budget_max: number,
+  is_fixed_budget: boolean,
+  deadline: timestamp,
+  project_type: 'individual' | 'team',
+  status: 'open' | 'in_progress' | 'completed',
+  escrow_balance: number,
+  milestones: Milestone[],
+  created_at: timestamp
+}
+```
 
-## 🔐 Security Features
+#### Teams Collection
+```javascript
+{
+  id: string,
+  name: string,
+  description: string,
+  leader_id: string,
+  member_ids: string[],
+  skills: string[],
+  wallet_balance: number,
+  created_at: timestamp
+}
+```
 
-- JWT token authentication
-- Role-based access control
-- University email verification
-- Rate limiting
-- Input validation
-- CORS protection
-- Helmet security headers
-- **Environment variable protection** - No hardcoded credentials
-- **Git protection** - `.gitignore` prevents credential commits
-- **Runtime validation** - Checks for required environment variables
+## 🔒 Security Features
 
-## 📊 Database Schema
-
-### Core Collections
-- `users` - User accounts
-- `student_profiles` - Student-specific data
-- `projects` - Project listings
-- `bids` - Project proposals
-- `contracts` - Accepted projects
-- `milestones` - Project deliverables
-- `teams` - Student teams
-- `transactions` - Payment records
-- `reviews` - Project reviews
-- `chat_messages` - Real-time chat
+- **JWT Authentication**: Secure API access
+- **Role-based Access Control**: Granular permissions
+- **Input Validation**: Comprehensive data validation
+- **Rate Limiting**: API abuse prevention
+- **File Upload Security**: Type and size validation
+- **SQL Injection Protection**: Parameterized queries
+- **XSS Protection**: Input sanitization
 
 ## 🚀 Deployment
 
-### Backend (Railway/Heroku)
+### Production Environment Variables
 ```bash
-# Set environment variables
-# Deploy to Railway/Heroku
-# Configure Firebase credentials
+NODE_ENV=production
+PORT=5000
+FIREBASE_PROJECT_ID=your-production-project
+# ... other production values
 ```
 
-### Frontend (Vercel/Netlify)
+### Build for Production
 ```bash
-# Set NEXT_PUBLIC_API_URL
-# Deploy to Vercel/Netlify
-# Configure build settings
+# Build client
+cd client
+npm run build
+
+# Build server (if needed)
+cd server
+npm run build
 ```
 
-### Database
-- Firebase Firestore (production)
-- Firebase Auth (authentication)
-- Firebase Storage (file uploads)
+### Deploy to Vercel (Frontend)
+```bash
+# Install Vercel CLI
+npm i -g vercel
 
-## 🎯 MVP Features Completed
+# Deploy
+cd client
+vercel --prod
+```
 
-✅ **Authentication System**
-- User registration/login
-- University verification
-- Role-based access
+### Deploy to Railway (Backend)
+```bash
+# Install Railway CLI
+npm i -g @railway/cli
 
-✅ **Project Management**
-- Create/browse projects
-- Advanced filtering
-- Project details
+# Deploy
+cd server
+railway login
+railway up
+```
 
-✅ **Bidding System**
-- Submit proposals
-- Accept/reject bids
-- Contract creation
+## 🤝 Contributing
 
-✅ **Payment System**
-- Simulated escrow
-- Milestone tracking
-- Team payment splits
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
-✅ **Team Collaboration**
-- Create/join teams
-- Team management
-- Collaborative projects
+## 📝 License
 
-✅ **Admin Dashboard**
-- User management
-- Dispute resolution
-- Analytics
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-✅ **Real-time Features**
-- Project chat
-- File sharing
-- Notifications
+## 🆘 Support
 
-## 🔮 Future Enhancements
+If you encounter any issues or have questions:
 
-- **Stripe Integration** - Replace simulated payments
-- **Mobile App** - React Native version
-- **AI Recommendations** - ML-based project matching
-- **Video Calls** - Integrated communication
-- **Advanced Analytics** - Business intelligence
-- **API Documentation** - Swagger/OpenAPI
-- **Testing Suite** - Unit and integration tests
+1. Check the [Issues](https://github.com/your-username/BitNBuild-25_wednesdayhack/issues) page
+2. Create a new issue with detailed information
+3. Contact the development team
 
-## 👥 Team Collaboration
+## 🎯 Roadmap
 
-Each team member can work independently on their assigned modules:
+### Phase 1 (Current)
+- ✅ Core project management
+- ✅ Team collaboration
+- ✅ Escrow system
+- ✅ Real-time chat
+- ✅ Admin dashboard
 
-1. **Frontend Dev 1**: Focus on dashboard and project management
-2. **Frontend Dev 2**: Handle workspace and communication features  
-3. **Backend Dev 1**: Implement core API and payment logic
-4. **Backend Dev 2**: Build teams, admin, and advanced features
+### Phase 2 (Planned)
+- 🔄 Advanced analytics
+- 🔄 Mobile app
+- 🔄 Payment gateway integration
+- 🔄 Advanced AI recommendations
+- 🔄 Video calling integration
 
-## 📞 Support
+### Phase 3 (Future)
+- 🔄 Blockchain integration
+- 🔄 Cryptocurrency payments
+- 🔄 Advanced dispute resolution
+- 🔄 International expansion
 
-For questions or issues:
-- Check the code comments for implementation details
-- Review the API documentation
-- Test with the provided endpoints
-- Use the development environment for testing
+## 🙏 Acknowledgments
 
-## 🏆 Hackathon Ready
+- Firebase team for excellent backend services
+- Next.js team for the amazing React framework
+- Tailwind CSS for beautiful styling
+- All contributors and testers
 
-This codebase is designed for rapid deployment and demonstration:
+---
 
-- **Modular Architecture** - Easy to extend and modify
-- **Comprehensive Documentation** - Clear setup instructions
-- **Production Ready** - Security and error handling
-- **Scalable Design** - Can handle growth
-- **Team Friendly** - Clear module separation
-
-Good luck with your hackathon! 🚀
+**Built with ❤️ by the BitNBuild team**

@@ -8,8 +8,19 @@ const { auth, optionalAuth, requireUniversityVerification, userRateLimit } = req
 const handleError = require('../utils/error-handler');
 const dbOperations = require('../utils/db-operations');
 const firestoreHelpers = require('../utils/firestore-helpers');
+const EscrowService = require('../services/EscrowService');
+const RecommendationService = require('../services/RecommendationService');
 
 const router = express.Router();
+
+// Debug route to test API connectivity
+router.get('/debug', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Projects API is working',
+    timestamp: new Date().toISOString()
+  });
+});
 
 // Project status constants
 const PROJECT_STATUS = {
@@ -21,41 +32,167 @@ const PROJECT_STATUS = {
 };
 
 /**
+ * GET /api/projects
+ * Get all projects with filtering and pagination
+ */
+router.get('/', optionalAuth, async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 10,
+      category,
+      minBudget,
+      maxBudget,
+      skills,
+      status = 'open',
+      sortBy = 'createdAt',
+      sortOrder = 'desc',
+      search
+    } = req.query;
+
+    // Build query
+    let projectsRef = db.collection('projects');
+    
+    // Apply filters
+    if (status && status !== 'all') {
+      projectsRef = projectsRef.where('status', '==', status);
+    }
+    
+    if (category) {
+      projectsRef = projectsRef.where('category', '==', category);
+    }
+
+    // Get documents
+    const snapshot = await projectsRef
+      .orderBy(sortBy, sortOrder)
+      .get();
+
+    // Process results
+    let projects = [];
+    snapshot.forEach(doc => {
+      const project = {
+        id: doc.id,
+        ...doc.data(),
+        createdAt: doc.data().createdAt?.toDate().toISOString(),
+        updatedAt: doc.data().updatedAt?.toDate().toISOString()
+      };
+      projects.push(project);
+    });
+
+    // Apply additional filters that can't be done in query
+    if (minBudget) {
+      projects = projects.filter(p => p.budget >= Number(minBudget));
+    }
+    if (maxBudget) {
+      projects = projects.filter(p => p.budget <= Number(maxBudget));
+    }
+    if (skills) {
+      const skillList = typeof skills === 'string' ? skills.split(',') : skills;
+      projects = projects.filter(p => 
+        p.skills?.some(s => skillList.includes(s))
+      );
+    }
+    if (search) {
+      const searchLower = search.toLowerCase();
+      projects = projects.filter(p => 
+        p.title?.toLowerCase().includes(searchLower) ||
+        p.description?.toLowerCase().includes(searchLower)
+      );
+    }
+
+    // Pagination
+    const total = projects.length;
+    const totalPages = Math.ceil(total / limit);
+    const start = (page - 1) * limit;
+    const end = start + limit;
+    const paginatedProjects = projects.slice(start, end);
+
+    res.json({
+      success: true,
+      projects: paginatedProjects,
+      pagination: {
+        total,
+        currentPage: Number(page),
+        totalPages,
+        hasMore: end < total
+      }
+    });
+
+  } catch (error) {
+    console.error('Error getting projects:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to load projects',
+      message: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+/**
+ * GET /api/projects/recommendations
+ * Get recommended projects for authenticated user
+ */
+router.get('/recommendations', auth, async (req, res) => {
+  try {
+    const { limit = 10, includeTrending = true } = req.query;
+    
+    const result = await RecommendationService.getRecommendedProjects(
+      req.user.id,
+      {
+        limit: parseInt(limit),
+        includeTrending: includeTrending === 'true'
+      }
+    );
+
+    res.json(result);
+
+  } catch (error) {
+    console.error('Get recommendations error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get recommendations',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+/**
+ * GET /api/projects/trending
+ * Get trending projects and skills
+ */
+router.get('/trending', optionalAuth, async (req, res) => {
+  try {
+    const { limit = 10 } = req.query;
+    
+    const trendingProjects = await RecommendationService.getTrendingProjects(parseInt(limit));
+    const trendingSkills = await RecommendationService.getTrendingSkills(20);
+
+    res.json({
+      success: true,
+      data: {
+        projects: trendingProjects,
+        skills: trendingSkills.data
+      }
+    });
+
+  } catch (error) {
+    console.error('Get trending error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get trending data',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+/**
  * GET /api/projects/skill-suggestions
  * Get skill suggestions based on trending skills in projects
  */
 router.get('/skill-suggestions', optionalAuth, async (req, res) => {
   try {
-    // Get all projects to analyze skill trends
-    const snapshot = await db.collection('projects')
-      .limit(100)
-      .get();
-
-    const skillCount = {};
-    
-    snapshot.docs.forEach(doc => {
-      const project = doc.data();
-      if (project.skills_required && Array.isArray(project.skills_required)) {
-        project.skills_required.forEach(skill => {
-          skillCount[skill] = (skillCount[skill] || 0) + 1;
-        });
-      }
-    });
-
-    // Sort skills by frequency and return top suggestions
-    const suggestions = Object.entries(skillCount)
-      .sort(([,a], [,b]) => b - a)
-      .slice(0, 20)
-      .map(([skill, count]) => ({
-        skill,
-        count,
-        trending: count > 3
-      }));
-
-    res.json({
-      success: true,
-      data: suggestions
-    });
+    const result = await RecommendationService.getTrendingSkills(20);
+    res.json(result);
 
   } catch (error) {
     console.error('Get skill suggestions error:', error);
@@ -196,6 +333,8 @@ const validateProjectData = (data, isCreate = true) => {
  */
 router.get('/', optionalAuth, async (req, res) => {
   try {
+    console.log('GET /projects query:', req.query); // Debug log
+    
     const {
       page = 1,
       limit = 10,
@@ -308,11 +447,13 @@ router.get('/', optionalAuth, async (req, res) => {
 router.get('/:id', optionalAuth, async (req, res) => {
   try {
     const { id } = req.params;
+    console.log('Fetching project with ID:', id);
     
     const projectDoc = await db.collection('projects').doc(id).get();
     
     if (!projectDoc.exists) {
-      return res.status(404).json({ error: 'Project not found' });
+      console.log('Project not found:', id);
+      return res.status(404).json({ success: false, error: 'Project not found' });
     }
 
     const projectData = projectDoc.data();
@@ -355,6 +496,7 @@ router.get('/:id', optionalAuth, async (req, res) => {
       milestones
     };
 
+    console.log('Project data prepared:', project);
     res.json({
       success: true,
       data: project
@@ -362,7 +504,11 @@ router.get('/:id', optionalAuth, async (req, res) => {
 
   } catch (error) {
     console.error('Get project error:', error);
-    res.status(500).json({ error: 'Failed to get project' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to get project',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
@@ -843,6 +989,156 @@ router.get('/my/created', auth, async (req, res) => {
   } catch (error) {
     console.error('Get my projects error:', error);
     res.status(500).json({ error: 'Failed to get your projects' });
+  }
+});
+
+/**
+ * POST /api/projects/:id/escrow/deposit
+ * Deposit funds into project escrow
+ */
+router.post('/:id/escrow/deposit', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { amount } = req.body;
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid amount',
+        details: ['Amount must be greater than 0']
+      });
+    }
+
+    const result = await EscrowService.depositToEscrow(id, req.user.id, parseFloat(amount));
+
+    res.json(result);
+
+  } catch (error) {
+    console.error('Escrow deposit error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to deposit funds',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+/**
+ * GET /api/projects/:id/escrow/balance
+ * Get escrow balance for a project
+ */
+router.get('/:id/escrow/balance', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const result = await EscrowService.getEscrowBalance(id);
+
+    res.json(result);
+
+  } catch (error) {
+    console.error('Get escrow balance error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get escrow balance',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+/**
+ * GET /api/projects/:id/transactions
+ * Get transaction history for a project
+ */
+router.get('/:id/transactions', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const result = await EscrowService.getTransactionHistory(id);
+
+    res.json(result);
+
+  } catch (error) {
+    console.error('Get transaction history error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get transaction history',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+/**
+ * POST /api/projects/:id/milestones/:mid/approve
+ * Approve a milestone
+ */
+router.post('/:id/milestones/:mid/approve', auth, async (req, res) => {
+  try {
+    const { id, mid } = req.params;
+    
+    const result = await EscrowService.approveMilestone(id, mid, req.user.id);
+
+    res.json(result);
+
+  } catch (error) {
+    console.error('Approve milestone error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to approve milestone',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+/**
+ * POST /api/projects/:id/milestones/:mid/release
+ * Release funds for an approved milestone
+ */
+router.post('/:id/milestones/:mid/release', auth, async (req, res) => {
+  try {
+    const { id, mid } = req.params;
+    
+    const result = await EscrowService.releaseMilestone(id, mid, req.user.id);
+
+    res.json(result);
+
+  } catch (error) {
+    console.error('Release milestone error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to release milestone funds',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+/**
+ * POST /api/projects/:id/milestones/:mid/partial-release
+ * Partial release of milestone funds
+ */
+router.post('/:id/milestones/:mid/partial-release', auth, async (req, res) => {
+  try {
+    const { id, mid } = req.params;
+    const { percent } = req.body;
+
+    if (!percent || percent <= 0 || percent > 100) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid percentage',
+        details: ['Percentage must be between 0 and 100']
+      });
+    }
+
+    const result = await EscrowService.partialRelease(id, mid, parseFloat(percent), req.user.id);
+
+    res.json(result);
+
+  } catch (error) {
+    console.error('Partial release error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to partially release funds',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 

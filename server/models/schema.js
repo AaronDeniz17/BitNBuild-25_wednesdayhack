@@ -16,7 +16,12 @@ const userSchema = {
   last_login: 'timestamp',
   profile_picture: 'string',
   phone: 'string',
-  is_active: 'boolean'
+  is_active: 'boolean',
+  // New wallet and escrow fields
+  wallet_balance: 'number', // Available balance
+  escrow_balance: 'number', // Funds held in escrow
+  skills: 'array', // User skills for matching
+  updated_at: 'timestamp'
 };
 
 /**
@@ -55,13 +60,13 @@ const projectSchema = {
   title: 'string',
   description: 'string',
   required_skills: 'array', // ['React', 'Node.js']
-  budget: 'number',
+  budget_min: 'number', // Minimum budget
+  budget_max: 'number', // Maximum budget
+  is_fixed_budget: 'boolean', // true for fixed, false for range
   deadline: 'timestamp',
-  milestones: 'array', // [{ title, description, weight_pct, due_date }]
-  requires_team: 'boolean',
-  team_size_min: 'number',
-  team_size_max: 'number',
-  status: 'string', // 'open' | 'in_progress' | 'completed' | 'cancelled'
+  milestones: 'array', // [{ title, description, percentage, due_date }]
+  project_type: 'string', // 'individual' | 'team'
+  status: 'string', // 'open' | 'in_progress' | 'submitted' | 'completed' | 'archived'
   created_at: 'timestamp',
   updated_at: 'timestamp',
   category: 'string', // 'web-development', 'design', 'writing', 'marketing'
@@ -69,7 +74,12 @@ const projectSchema = {
   is_featured: 'boolean',
   tags: 'array', // ['urgent', 'long-term', 'startup']
   attachments: 'array', // File URLs
-  estimated_hours: 'number'
+  estimated_hours: 'number',
+  // New fields for enhanced functionality
+  escrow_balance: 'number', // Funds held in escrow for this project
+  view_count: 'number',
+  save_count: 'number',
+  bid_count: 'number'
 };
 
 /**
@@ -79,17 +89,19 @@ const projectSchema = {
 const bidSchema = {
   id: 'string',
   project_id: 'string', // References projects.id
-  freelancer_id: 'string', // References users.id (for individual bids)
-  team_id: 'string', // References teams.id (for team bids)
+  proposer_type: 'string', // 'user' | 'team'
+  proposer_id: 'string', // References users.id or teams.id
   price: 'number',
-  proposal: 'string',
   eta_days: 'number',
-  status: 'string', // 'pending' | 'accepted' | 'rejected'
+  pitch: 'string', // Short proposal pitch
+  portfolio_url: 'string', // Portfolio link
+  status: 'string', // 'pending' | 'accepted' | 'rejected' | 'withdrawn'
   created_at: 'timestamp',
   updated_at: 'timestamp',
-  portfolio_links: 'array',
+  // Enhanced fields
+  proposed_team: 'array', // Team members if team bid
+  skills_match: 'number', // Calculated skill match percentage
   previous_work: 'array', // Links to similar projects
-  is_individual: 'boolean',
   message: 'string' // Additional message to client
 };
 
@@ -252,14 +264,115 @@ const disputeSchema = {
  */
 const chatMessageSchema = {
   id: 'string',
-  contract_id: 'string', // References contracts.id
+  project_id: 'string', // References projects.id
   sender_id: 'string', // References users.id
-  message: 'string',
-  type: 'string', // 'text' | 'file' | 'system'
-  file_url: 'string', // If type is 'file'
+  text: 'string',
+  file_url: 'string', // File attachment URL
   created_at: 'timestamp',
   is_read: 'boolean',
   read_by: 'array' // Array of user IDs who read the message
+};
+
+/**
+ * TEAM_MEMBERS COLLECTION
+ * Team membership and roles
+ */
+const teamMemberSchema = {
+  id: 'string',
+  team_id: 'string', // References teams.id
+  user_id: 'string', // References users.id
+  role: 'string', // 'member' | 'lead'
+  joined_at: 'timestamp',
+  is_active: 'boolean'
+};
+
+/**
+ * ASSIGNMENTS COLLECTION
+ * Project role assignments
+ */
+const assignmentSchema = {
+  id: 'string',
+  project_id: 'string', // References projects.id
+  assignee_type: 'string', // 'user' | 'team'
+  assignee_id: 'string', // References users.id or teams.id
+  role: 'string', // 'developer' | 'designer' | 'manager' | etc.
+  created_at: 'timestamp'
+};
+
+/**
+ * TASKS COLLECTION (Enhanced)
+ * Individual tasks within projects
+ */
+const taskSchema = {
+  id: 'string',
+  project_id: 'string', // References projects.id
+  milestone_id: 'string', // References milestones.id (optional)
+  title: 'string',
+  description: 'string',
+  assignee_type: 'string', // 'user' | 'team'
+  assignee_id: 'string', // References users.id or teams.id
+  status: 'string', // 'todo' | 'in_progress' | 'done'
+  completion_log: 'array', // [{ by: user_id, at: timestamp, note: string }]
+  created_at: 'timestamp',
+  updated_at: 'timestamp'
+};
+
+/**
+ * TRANSACTIONS COLLECTION (Enhanced)
+ * All financial transactions with audit trail
+ */
+const transactionSchema = {
+  id: 'string',
+  project_id: 'string', // References projects.id
+  from_type: 'string', // 'user' | 'team' | 'system'
+  from_id: 'string', // Payer ID
+  to_type: 'string', // 'user' | 'team' | 'system'
+  to_id: 'string', // Receiver ID
+  amount: 'number',
+  currency: 'string', // 'USD'
+  type: 'string', // 'deposit' | 'escrow_fund' | 'milestone_release' | 'refund' | 'adjustment'
+  status: 'string', // 'pending' | 'settled' | 'reversed'
+  metadata: 'object', // Additional transaction data
+  created_at: 'timestamp'
+};
+
+/**
+ * DISPUTES COLLECTION (Enhanced)
+ * Dispute resolution system
+ */
+const disputeSchema = {
+  id: 'string',
+  project_id: 'string', // References projects.id
+  raised_by_id: 'string', // References users.id
+  status: 'string', // 'open' | 'resolved' | 'rejected'
+  summary: 'string',
+  details: 'string',
+  resolution: 'string',
+  created_at: 'timestamp',
+  updated_at: 'timestamp'
+};
+
+/**
+ * NOTIFICATIONS COLLECTION
+ * User notifications
+ */
+const notificationSchema = {
+  id: 'string',
+  user_id: 'string', // References users.id
+  type: 'string', // 'bid_accepted' | 'milestone_approved' | 'payment_received' | etc.
+  payload: 'object', // Notification data
+  read: 'boolean',
+  created_at: 'timestamp'
+};
+
+/**
+ * CHAT_ROOMS COLLECTION
+ * Project chat rooms
+ */
+const chatRoomSchema = {
+  id: 'string',
+  project_id: 'string', // References projects.id
+  created_at: 'timestamp'
 };
 
 module.exports = {
@@ -270,10 +383,14 @@ module.exports = {
   contractSchema,
   milestoneSchema,
   teamSchema,
+  teamMemberSchema,
+  assignmentSchema,
   taskSchema,
   transactionSchema,
   reviewSchema,
   rewardSchema,
   disputeSchema,
-  chatMessageSchema
+  chatMessageSchema,
+  chatRoomSchema,
+  notificationSchema
 };
