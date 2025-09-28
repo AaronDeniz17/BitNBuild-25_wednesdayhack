@@ -7,6 +7,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import Layout from '../../components/Layout/Layout';
 import Chat from '../../components/Chat';
 import toast from 'react-hot-toast';
+import { projectsAPI } from '../../lib/api';
 
 const ProjectDetails = () => {
   const router = useRouter();
@@ -39,14 +40,13 @@ const ProjectDetails = () => {
   const fetchProject = async () => {
     try {
       console.log('Fetching project with ID:', id);
-      const response = await fetch(`/api/projects/${id}`);
-      console.log('Response status:', response.status);
+      setLoading(true);
       
-      const data = await response.json();
-      console.log('Response data:', data);
+      const { data } = await projectsAPI.getProject(id);
+      console.log('Project data:', data);
       
-      if (data.success) {
-        setProject(data.data);
+      if (data) {
+        setProject(data);
         // Set milestones from project data
         if (data.data.milestones) {
           setMilestones(data.data.milestones);

@@ -49,8 +49,8 @@ const ClientDashboard = () => {
 
   // Calculate stats
   useEffect(() => {
-    if (projects?.projects && contracts?.contracts) {
-      const activeProjects = projects.projects.filter(p => p.status === 'open').length;
+    if (projectsResponse?.projects && contracts?.contracts) {
+      const activeProjects = projectsResponse.projects.filter(p => p.status === 'open').length;
       const completedProjects = contracts.contracts.filter(c => c.status === 'completed').length;
       const totalSpent = contracts.contracts
         .filter(c => c.status === 'completed')
@@ -63,7 +63,7 @@ const ClientDashboard = () => {
         pendingBids: 0, // TODO: Calculate from bids
       });
     }
-  }, [projects, contracts]);
+  }, [projectsResponse, contracts]);
 
   const quickActions = [
     {
@@ -236,9 +236,9 @@ const ClientDashboard = () => {
                   <div className="flex items-center justify-center py-8">
                     <div className="loading-spinner"></div>
                   </div>
-                ) : projects?.projects?.length > 0 ? (
+                ) : projectsResponse?.projects?.length > 0 ? (
                   <div className="space-y-4">
-                    {projects.projects.slice(0, 3).map((project) => (
+                    {projectsResponse.projects.slice(0, 3).map((project) => (
                       <div key={project.id} className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
                         <div className="flex items-start justify-between">
                           <div className="flex-1">
