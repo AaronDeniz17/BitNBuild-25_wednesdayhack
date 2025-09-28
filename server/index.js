@@ -23,7 +23,11 @@ const adminRoutes = require('./routes/admin');
 const chatRoutes = require('./routes/chat');
 const leaderboardRoutes = require('./routes/leaderboard');
 const notificationRoutes = require('./routes/notifications');
+<<<<<<< Updated upstream
 const analyticsRoutes = require('./routes/analytics');
+=======
+const analysisRoutes = require('./routes/analysis');
+>>>>>>> Stashed changes
 
 const app = express();
 const DEFAULT_PORT = 5000;
@@ -99,7 +103,11 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/leaderboard', leaderboardRoutes);
 app.use('/api/notifications', notificationRoutes);
+<<<<<<< Updated upstream
 app.use('/api/analytics', analyticsRoutes);
+=======
+app.use('/api/analysis', analysisRoutes);
+>>>>>>> Stashed changes
 
 // Error handling middleware
 app.use((err, req, res, next) => {

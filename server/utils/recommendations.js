@@ -6,17 +6,58 @@ const { admin } = require('../config/firebase');
 /**
  * Calculate skill match score between student and project
  */
-const calculateSkillMatch = (studentSkills, projectSkills) => {
+const { categorizeStudentSkills, findSkillCategory } = require('./skills');
+
+const calculateSkillMatch = async (student, projectSkills) => {
   if (!projectSkills || projectSkills.length === 0) return 0;
   
-  const matches = projectSkills.filter(skill => 
-    studentSkills.some(studentSkill => 
-      studentSkill.toLowerCase().includes(skill.toLowerCase()) ||
-      skill.toLowerCase().includes(studentSkill.toLowerCase())
-    )
-  ).length;
+  // Get categorized skills
+  const categorizedSkills = await categorizeStudentSkills(student.user_id);
   
-  return (matches / projectSkills.length) * 100;
+  let totalScore = 0;
+  let matchCount = 0;
+
+  for (const projectSkill of projectSkills) {
+    const category = findSkillCategory(projectSkill);
+    const studentCategory = categorizedSkills[category];
+
+    if (studentCategory) {
+      // Check main skills
+      const hasMainSkill = studentCategory.mainSkills.some(skill =>
+        skill.toLowerCase().includes(projectSkill.toLowerCase()) ||
+        projectSkill.toLowerCase().includes(skill.toLowerCase())
+      );
+
+      if (hasMainSkill) {
+        totalScore += 1.0; // Full point for main skill match
+        matchCount++;
+        continue;
+      }
+
+      // Check micro-skills
+      const hasMicroSkill = Object.values(studentCategory.microSkills)
+        .flat()
+        .some(skill =>
+          skill.toLowerCase().includes(projectSkill.toLowerCase()) ||
+          projectSkill.toLowerCase().includes(skill.toLowerCase())
+        );
+
+      if (hasMicroSkill) {
+        totalScore += 0.7; // Partial point for micro-skill match
+        matchCount++;
+      }
+    }
+  }
+
+  // Calculate final score considering both matches and category strength
+  const matchScore = matchCount > 0 ? (totalScore / projectSkills.length) * 100 : 0;
+  const categoryStrengths = Object.values(categorizedSkills).map(cat => cat.strength);
+  const avgCategoryStrength = categoryStrengths.length > 0
+    ? categoryStrengths.reduce((a, b) => a + b, 0) / categoryStrengths.length
+    : 0;
+
+  // Weight match score more heavily than category strength
+  return (matchScore * 0.7) + (avgCategoryStrength * 0.3);
 };
 
 /**
