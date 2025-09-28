@@ -37,11 +37,11 @@ const ProjectsPage = () => {
     ['projects', filters],
     () => projectsAPI.getProjects(filters),
     {
-      enabled: isAuthenticated,
+      enabled: true, // Remove authentication requirement for browsing projects
     }
   );
 
-  const projects = projectsData?.projects || [];
+  const projects = projectsData?.data || []; // Fix: use .data instead of .projects
   const pagination = projectsData?.pagination;
 
   const categories = [

@@ -573,4 +573,141 @@ router.post('/logout', auth, async (req, res) => {
   }
 });
 
+/**
+ * GET /api/auth/settings
+ * Get user settings and preferences
+ */
+router.get('/settings', auth, async (req, res) => {
+  try {
+    const userDoc = await db.collection('users').doc(req.user.id).get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const userData = userDoc.data();
+    const settings = {
+      email_notifications: userData.email_notifications ?? true,
+      push_notifications: userData.push_notifications ?? true,
+      marketing_emails: userData.marketing_emails ?? false,
+      privacy_mode: userData.privacy_mode ?? false,
+      theme: userData.theme ?? 'light'
+    };
+
+    res.json({
+      success: true,
+      data: settings
+    });
+
+  } catch (error) {
+    console.error('Get settings error:', error);
+    res.status(500).json({ error: 'Failed to get settings' });
+  }
+});
+
+/**
+ * PUT /api/auth/change-password
+ * Change user password
+ */
+router.put('/change-password', auth, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current and new passwords are required' });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters' });
+    }
+
+    // Update password in Firebase Auth
+    await admin.auth().updateUser(req.user.id, {
+      password: newPassword
+    });
+
+    res.json({
+      success: true,
+      message: 'Password changed successfully'
+    });
+
+  } catch (error) {
+    console.error('Change password error:', error);
+    res.status(500).json({ error: 'Failed to change password' });
+  }
+});
+
+/**
+ * PUT /api/auth/notification-settings
+ * Update notification settings
+ */
+router.put('/notification-settings', auth, async (req, res) => {
+  try {
+    const {
+      email_notifications,
+      push_notifications,
+      marketing_emails,
+      privacy_mode,
+      theme
+    } = req.body;
+
+    const updates = {};
+    if (email_notifications !== undefined) updates.email_notifications = email_notifications;
+    if (push_notifications !== undefined) updates.push_notifications = push_notifications;
+    if (marketing_emails !== undefined) updates.marketing_emails = marketing_emails;
+    if (privacy_mode !== undefined) updates.privacy_mode = privacy_mode;
+    if (theme !== undefined) updates.theme = theme;
+
+    await db.collection('users').doc(req.user.id).update({
+      ...updates,
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({
+      success: true,
+      message: 'Notification settings updated successfully'
+    });
+
+  } catch (error) {
+    console.error('Update notification settings error:', error);
+    res.status(500).json({ error: 'Failed to update notification settings' });
+  }
+});
+
+/**
+ * DELETE /api/auth/account
+ * Delete user account (soft delete - mark as deleted)
+ */
+router.delete('/account', auth, userRateLimit(1, 24 * 60 * 60 * 1000), async (req, res) => {
+  try {
+    const { confirmation } = req.body;
+
+    if (confirmation !== 'DELETE') {
+      return res.status(400).json({ error: 'Invalid confirmation. Type DELETE to confirm.' });
+    }
+
+    // Soft delete - mark user as deleted instead of permanently removing
+    await db.collection('users').doc(req.user.id).update({
+      deleted_at: admin.firestore.FieldValue.serverTimestamp(),
+      status: 'deleted',
+      email: `deleted_${Date.now()}@example.com`, // Anonymize email
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    // Optionally disable Firebase Auth user
+    await admin.auth().updateUser(req.user.id, {
+      disabled: true
+    });
+
+    res.json({
+      success: true,
+      message: 'Account deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete account error:', error);
+    res.status(500).json({ error: 'Failed to delete account' });
+  }
+});
+
 module.exports = router;

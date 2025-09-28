@@ -16,6 +16,7 @@ import {
 } from '@heroicons/react/24/outline';
 
 import Layout from '../../components/Layout/Layout';
+import ProjectCard from '../../components/ProjectCard';
 import { useAuth } from '../../contexts/AuthContext';
 import { projectsAPI, contractsAPI, reviewsAPI } from '../../lib/api';
 import { formatCurrency, formatDate, getRelativeTime } from '../../lib/auth';
@@ -269,35 +270,13 @@ const StudentDashboard = () => {
                     <div className="loading-spinner"></div>
                   </div>
                 ) : filteredProjects?.length > 0 ? (
-                  <div className="space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     {filteredProjects.slice(0, 3).map((project) => (
-                      <div key={project.id} className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1">
-                            <h4 className="text-sm font-medium text-gray-900">{project.title}</h4>
-                            <p className="text-sm text-gray-500 mt-1 line-clamp-2">
-                              {project.description}
-                            </p>
-                            <div className="flex items-center mt-2 space-x-4">
-                              <span className="text-sm text-gray-500">
-                                {formatCurrency(project.budget)}
-                              </span>
-                              <span className="text-sm text-gray-500">
-                                Due {formatDate(project.deadline)}
-                              </span>
-                              <span className="text-sm text-primary-600">
-                                {project.skill_match_score}% match
-                              </span>
-                            </div>
-                          </div>
-                          <Link
-                            href={`/projects/${project.id}`}
-                            className="ml-4 text-primary-600 hover:text-primary-500 text-sm font-medium"
-                          >
-                            View
-                          </Link>
-                        </div>
-                      </div>
+                      <ProjectCard 
+                        key={project.id} 
+                        project={project} 
+                        showClient={true}
+                      />
                     ))}
                   </div>
                 ) : (
