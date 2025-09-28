@@ -26,7 +26,7 @@ const notificationRoutes = require('./routes/notifications');
 const analyticsRoutes = require('./routes/analytics');
 
 const app = express();
-const DEFAULT_PORT = 5000;
+const DEFAULT_PORT = 5001;
 const MAX_PORT_ATTEMPTS = 10;
 
 // Try to get port from environment or use default

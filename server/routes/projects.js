@@ -20,6 +20,53 @@ const PROJECT_STATUS = {
   CANCELLED: 'cancelled'
 };
 
+/**
+ * GET /api/projects/skill-suggestions
+ * Get skill suggestions based on trending skills in projects
+ */
+router.get('/skill-suggestions', optionalAuth, async (req, res) => {
+  try {
+    // Get all projects to analyze skill trends
+    const snapshot = await db.collection('projects')
+      .limit(100)
+      .get();
+
+    const skillCount = {};
+    
+    snapshot.docs.forEach(doc => {
+      const project = doc.data();
+      if (project.skills_required && Array.isArray(project.skills_required)) {
+        project.skills_required.forEach(skill => {
+          skillCount[skill] = (skillCount[skill] || 0) + 1;
+        });
+      }
+    });
+
+    // Sort skills by frequency and return top suggestions
+    const suggestions = Object.entries(skillCount)
+      .sort(([,a], [,b]) => b - a)
+      .slice(0, 20)
+      .map(([skill, count]) => ({
+        skill,
+        count,
+        trending: count > 3
+      }));
+
+    res.json({
+      success: true,
+      data: suggestions
+    });
+
+  } catch (error) {
+    console.error('Get skill suggestions error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to get skill suggestions',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
 // Get single project by ID
 router.get('/:id', optionalAuth, async (req, res) => {
   try {

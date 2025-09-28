@@ -87,6 +87,10 @@ export const authAPI = {
   getProfile: () => api.get('/auth/profile'),
   updateProfile: (updates) => api.put('/auth/profile', updates),
   logout: () => api.post('/auth/logout'),
+  getSettings: () => api.get('/auth/settings'),
+  changePassword: (passwordInfo) => api.put('/auth/change-password', passwordInfo),
+  updateNotificationSettings: (settings) => api.put('/auth/notification-settings', settings),
+  deleteAccount: (confirmation) => api.delete('/auth/account', { data: { confirmation } }),
 };
 
 // Projects API
@@ -173,9 +177,15 @@ export const reviewsAPI = {
 
 // Chat API
 export const chatAPI = {
+  // General conversations
+  getConversations: (params = {}) => api.get('/chat/conversations', { params }),
+  getMessages: (conversationId, params = {}) => api.get(`/chat/${conversationId}/messages`, { params }),
+  sendMessage: (conversationId, text) => api.post(`/chat/${conversationId}/messages`, { text }),
+  createConversation: (participantId) => api.post('/chat/conversations', { participant_id: participantId }),
+  markMessageRead: (conversationId, messageId) => api.put(`/chat/${conversationId}/messages/${messageId}/read`),
+  
+  // Contract-specific chat (legacy support)
   getContractMessages: (contractId, params = {}) => api.get(`/chat/${contractId}/messages`, { params }),
-  sendMessage: (contractId, message, type = 'text', fileUrl = null) => api.post(`/chat/${contractId}/messages`, { message, type, file_url: fileUrl }),
-  markMessageRead: (contractId, messageId) => api.put(`/chat/${contractId}/messages/${messageId}/read`),
   getUnreadCount: (contractId) => api.get(`/chat/${contractId}/unread-count`),
   getChatContracts: () => api.get('/chat/contracts'),
 };

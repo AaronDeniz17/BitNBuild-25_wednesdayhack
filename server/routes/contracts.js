@@ -22,13 +22,20 @@ const CONTRACT_STATUS = {
  */
 router.get('/', auth, async (req, res) => {
   try {
-    const { status, page = 1, limit = 10 } = req.query;
+    const { status, type, page = 1, limit = 10 } = req.query;
 
     let query = db.collection('contracts')
       .where('participants', 'array-contains', req.user.id);
 
     if (status && status !== 'all') {
       query = query.where('status', '==', status);
+    }
+
+    // Filter by user role type
+    if (type === 'client') {
+      query = query.where('client_id', '==', req.user.id);
+    } else if (type === 'freelancer') {
+      query = query.where('freelancer_id', '==', req.user.id);
     }
 
     query = query.orderBy('created_at', 'desc');

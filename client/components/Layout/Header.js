@@ -14,7 +14,8 @@ import {
   HomeIcon,
   BriefcaseIcon,
   UserGroupIcon,
-  ChartBarIcon
+  ChartBarIcon,
+  ChatBubbleLeftRightIcon
 } from '@heroicons/react/24/outline';
 
 import { useAuth } from '../../contexts/AuthContext';
@@ -39,6 +40,7 @@ const Header = () => {
     },
     { name: 'Projects', href: '/projects', icon: BriefcaseIcon },
     { name: 'Teams', href: '/teams', icon: UserGroupIcon },
+    { name: 'Chat', href: '/chat', icon: ChatBubbleLeftRightIcon },
     { name: 'Leaderboard', href: '/leaderboard', icon: ChartBarIcon },
   ];
 

@@ -18,12 +18,13 @@ import {
   PaperAirplaneIcon,
   StarIcon,
   BriefcaseIcon,
-  ExclamationTriangleIcon
+  ExclamationTriangleIcon,
+  ChevronLeftIcon
 } from '@heroicons/react/24/outline';
 
 import Layout from '../../components/Layout/Layout';
 import { useAuth } from '../../contexts/AuthContext';
-import { projectsAPI, bidsAPI } from '../../lib/api';
+import { projectsAPI, bidsAPI, chatAPI } from '../../lib/api';
 import { formatCurrency, formatDate, getRelativeTime } from '../../lib/utils';
 
 const ProjectDetailPage = () => {
@@ -67,9 +68,9 @@ const ProjectDetailPage = () => {
   }, [error]);
 
   // Get project, client, and bids from the response
-  const project = projectData?.data?.project;
-  const client = projectData?.data?.client;
-  const bids = projectData?.data?.bids || [];
+  const project = projectData?.data?.data?.project;
+  const client = projectData?.data?.data?.client;
+  const bids = projectData?.data?.data?.bids || [];
 
   // Bid submission mutation
   const bidMutation = useMutation(
@@ -123,6 +124,23 @@ const ProjectDetailPage = () => {
     };
 
     bidMutation.mutate(bidPayload);
+  };
+
+  const handleContactClient = async () => {
+    if (!user || !project?.client_id) {
+      toast.error('Unable to start conversation');
+      return;
+    }
+
+    try {
+      const response = await chatAPI.createConversation(project.client_id);
+      if (response.data) {
+        router.push('/chat');
+        toast.success('Conversation started!');
+      }
+    } catch (error) {
+      toast.error('Failed to start conversation');
+    }
   };
 
   const handlePortfolioLinkChange = (index, value) => {
@@ -366,14 +384,22 @@ const ProjectDetailPage = () => {
                 )}
               </div>
 
-              {/* Action Button */}
+              {/* Action Buttons */}
               {canBid && (
-                <button
-                  onClick={() => setShowBidModal(true)}
-                  className="btn-primary w-full"
-                >
-                  Submit Bid
-                </button>
+                <div className="space-y-3">
+                  <button
+                    onClick={() => setIsBidModalOpen(true)}
+                    className="btn-primary w-full"
+                  >
+                    Submit Bid
+                  </button>
+                  <button
+                    onClick={handleContactClient}
+                    className="btn-secondary w-full"
+                  >
+                    Contact Client
+                  </button>
+                </div>
               )}
 
               {!user && (
@@ -432,7 +458,7 @@ const ProjectDetailPage = () => {
       </div>
 
       {/* Bid Modal */}
-      {showBidModal && (
+      {isBidModalOpen && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg max-w-2xl w-full max-h-screen overflow-y-auto">
             <div className="p-6">
@@ -530,18 +556,18 @@ const ProjectDetailPage = () => {
                 <div className="flex justify-end space-x-4">
                   <button
                     type="button"
-                    onClick={() => setShowBidModal(false)}
+                    onClick={() => setIsBidModalOpen(false)}
                     className="btn-secondary"
-                    disabled={submittingBid}
+                    disabled={bidMutation.isLoading}
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
                     className="btn-primary"
-                    disabled={submittingBid}
+                    disabled={bidMutation.isLoading}
                   >
-                    {submittingBid ? 'Submitting...' : 'Submit Bid'}
+                    {bidMutation.isLoading ? 'Submitting...' : 'Submit Bid'}
                   </button>
                 </div>
               </form>
