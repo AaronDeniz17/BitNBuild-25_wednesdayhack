@@ -1,0 +1,99 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function getUserRole() {
+      return get(/databases/$(database)/documents/students/$(request.auth.uid)).data.role ||
+             get(/databases/$(database)/documents/clients/$(request.auth.uid)).data.role ||
+             get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && getUserRole() == 'admin';
+    }
+    
+    function isStudent() {
+      return isAuthenticated() && getUserRole() == 'student';
+    }
+    
+    function isClient() {
+      return isAuthenticated() && getUserRole() == 'client';
+    }
+
+    // Students collection
+    match /students/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner(userId) || isAdmin();
+    }
+
+    // Clients collection
+    match /clients/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner(userId) || isAdmin();
+    }
+
+    // Admins collection
+    match /admins/{userId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // Wallets collection
+    match /wallets/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow write: if isOwner(userId) || isAdmin();
+      
+      // Wallet transactions subcollection
+      match /transactions/{transactionId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if isOwner(userId) || isAdmin();
+      }
+    }
+
+    // Escrows collection
+    match /escrows/{escrowId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && (
+        // Allow if user is the client or student involved
+        resource.data.clientId == request.auth.uid ||
+        resource.data.studentId == request.auth.uid ||
+        isAdmin()
+      );
+    }
+
+    // Disputes collection
+    match /disputes/{disputeId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && (
+        // Allow if user is involved in the dispute or is admin
+        resource.data.clientId == request.auth.uid ||
+        resource.data.studentId == request.auth.uid ||
+        isAdmin()
+      );
+    }
+
+    // Admin actions collection (admin only)
+    match /admin_actions/{actionId} {
+      allow read, write: if isAdmin();
+    }
+
+    // Projects collection (if you add this later)
+    match /projects/{projectId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Default deny all other documents
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
